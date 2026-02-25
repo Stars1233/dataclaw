@@ -388,7 +388,13 @@ class TestParseSessionFile:
 
 
 class TestDiscoverProjects:
+    def _disable_codex(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dataclaw.parser.CODEX_SESSIONS_DIR", tmp_path / "no-codex-sessions")
+        monkeypatch.setattr("dataclaw.parser.CODEX_ARCHIVED_DIR", tmp_path / "no-codex-archived")
+        monkeypatch.setattr("dataclaw.parser._CODEX_PROJECT_INDEX", {})
+
     def test_with_projects(self, tmp_path, monkeypatch, mock_anonymizer):
+        self._disable_codex(tmp_path, monkeypatch)
         projects_dir = tmp_path / "projects"
         proj = projects_dir / "-Users-alice-Documents-myapp"
         proj.mkdir(parents=True)
@@ -407,10 +413,12 @@ class TestDiscoverProjects:
         assert projects[0]["session_count"] == 1
 
     def test_no_projects_dir(self, tmp_path, monkeypatch):
+        self._disable_codex(tmp_path, monkeypatch)
         monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", tmp_path / "nonexistent")
         assert discover_projects() == []
 
     def test_empty_project_dir(self, tmp_path, monkeypatch):
+        self._disable_codex(tmp_path, monkeypatch)
         projects_dir = tmp_path / "projects"
         proj = projects_dir / "empty-project"
         proj.mkdir(parents=True)
@@ -418,6 +426,7 @@ class TestDiscoverProjects:
         assert discover_projects() == []
 
     def test_parse_project_sessions(self, tmp_path, monkeypatch, mock_anonymizer):
+        self._disable_codex(tmp_path, monkeypatch)
         projects_dir = tmp_path / "projects"
         proj = projects_dir / "test-project"
         proj.mkdir(parents=True)
@@ -434,5 +443,127 @@ class TestDiscoverProjects:
         assert sessions[0]["project"] == "test-project"
 
     def test_parse_nonexistent_project(self, tmp_path, monkeypatch, mock_anonymizer):
+        self._disable_codex(tmp_path, monkeypatch)
         monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", tmp_path / "projects")
         assert parse_project_sessions("nope", mock_anonymizer) == []
+
+    def test_discover_codex_projects(self, tmp_path, monkeypatch):
+        projects_dir = tmp_path / "projects"
+        monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", projects_dir / "nonexistent")
+
+        codex_sessions = tmp_path / "codex-sessions" / "2026" / "02" / "24"
+        codex_sessions.mkdir(parents=True)
+        session_file = codex_sessions / "rollout-1.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-02-24T16:09:59.567Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "session-1",
+                        "cwd": "/Users/testuser/Documents/myrepo",
+                        "model_provider": "openai",
+                    },
+                }
+            ) + "\n"
+        )
+
+        monkeypatch.setattr("dataclaw.parser.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
+        monkeypatch.setattr("dataclaw.parser.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
+        monkeypatch.setattr("dataclaw.parser._CODEX_PROJECT_INDEX", {})
+
+        projects = discover_projects()
+        assert len(projects) == 1
+        assert projects[0]["source"] == "codex"
+        assert projects[0]["display_name"] == "codex:myrepo"
+
+    def test_parse_codex_project_sessions(self, tmp_path, monkeypatch, mock_anonymizer):
+        monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", tmp_path / "projects" / "nonexistent")
+        monkeypatch.setattr("dataclaw.parser._CODEX_PROJECT_INDEX", {})
+
+        codex_sessions = tmp_path / "codex-sessions" / "2026" / "02" / "24"
+        codex_sessions.mkdir(parents=True)
+        session_file = codex_sessions / "rollout-1.jsonl"
+        lines = [
+            {
+                "timestamp": "2026-02-24T16:09:59.567Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-1",
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model_provider": "openai",
+                    "git": {"branch": "main"},
+                },
+            },
+            {
+                "timestamp": "2026-02-24T16:09:59.568Z",
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model": "gpt-5.3-codex",
+                },
+            },
+            {
+                "timestamp": "2026-02-24T16:10:00.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "please list files",
+                    "images": [],
+                    "local_images": [],
+                    "text_elements": [],
+                },
+            },
+            {
+                "timestamp": "2026-02-24T16:10:00.100Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-1",
+                    "arguments": json.dumps({"cmd": "ls -la"}),
+                },
+            },
+            {
+                "timestamp": "2026-02-24T16:10:01.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "I checked the directory.",
+                },
+            },
+            {
+                "timestamp": "2026-02-24T16:10:02.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 120,
+                            "cached_input_tokens": 30,
+                            "output_tokens": 40,
+                        }
+                    },
+                    "rate_limits": {},
+                },
+            },
+        ]
+        session_file.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+        monkeypatch.setattr("dataclaw.parser.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
+        monkeypatch.setattr("dataclaw.parser.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
+
+        sessions = parse_project_sessions(
+            "/Users/testuser/Documents/myrepo",
+            mock_anonymizer,
+            source="codex",
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["project"] == "codex:myrepo"
+        assert sessions[0]["model"] == "gpt-5.3-codex"
+        assert sessions[0]["stats"]["input_tokens"] == 150
+        assert sessions[0]["stats"]["output_tokens"] == 40
+        assert sessions[0]["messages"][0]["role"] == "user"
+        assert sessions[0]["messages"][1]["role"] == "assistant"
+        assert sessions[0]["messages"][1]["tool_uses"][0]["tool"] == "exec_command"

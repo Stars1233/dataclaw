@@ -48,12 +48,16 @@ EXPORT_REVIEW_PUBLISH_STEPS = [
 ]
 
 SETUP_TO_PUBLISH_STEPS = [
-    "Step 1/5: Run prep/list to review project scope: dataclaw prep && dataclaw list",
-    "Step 2/5: Configure exclusions/redactions and confirm projects: dataclaw config ...",
-    "Step 3/5: Export locally only: dataclaw export --no-push --output /tmp/dataclaw_export.jsonl",
-    "Step 4/5: Review and confirm: dataclaw confirm ...",
-    "Step 5/5: After explicit user approval, publish: dataclaw export --publish-attestation \"User explicitly approved publishing to Hugging Face.\"",
+    "Step 1/6: Run prep/list to review project scope: dataclaw prep && dataclaw list",
+    "Step 2/6: Explicitly choose source scope: dataclaw config --source <claude|codex|both>",
+    "Step 3/6: Configure exclusions/redactions and confirm projects: dataclaw config ...",
+    "Step 4/6: Export locally only: dataclaw export --no-push --output /tmp/dataclaw_export.jsonl",
+    "Step 5/6: Review and confirm: dataclaw confirm ...",
+    "Step 6/6: After explicit user approval, publish: dataclaw export --publish-attestation \"User explicitly approved publishing to Hugging Face.\"",
 ]
+
+EXPLICIT_SOURCE_CHOICES = {"claude", "codex", "both"}
+SOURCE_CHOICES = ["auto", "claude", "codex", "both"]
 
 
 def _mask_secret(s: str) -> str:
@@ -72,6 +76,7 @@ def _mask_config_for_display(config: dict) -> dict:
 
 
 def _source_label(source_filter: str) -> str:
+    source_filter = _normalize_source_filter(source_filter)
     if source_filter == "claude":
         return "Claude Code"
     if source_filter == "codex":
@@ -79,7 +84,37 @@ def _source_label(source_filter: str) -> str:
     return "Claude Code or Codex"
 
 
+def _normalize_source_filter(source_filter: str) -> str:
+    if source_filter == "both":
+        return "auto"
+    return source_filter
+
+
+def _is_explicit_source_choice(source_filter: str | None) -> bool:
+    return source_filter in EXPLICIT_SOURCE_CHOICES
+
+
+def _resolve_source_choice(
+    requested_source: str,
+    config: DataClawConfig | None = None,
+) -> tuple[str, bool]:
+    """Resolve source choice from CLI + config.
+
+    Returns:
+      (source_choice, explicit) where source_choice is one of
+      "claude" | "codex" | "both" | "auto".
+    """
+    if _is_explicit_source_choice(requested_source):
+        return requested_source, True
+    if config:
+        configured_source = config.get("source")
+        if _is_explicit_source_choice(configured_source):
+            return str(configured_source), True
+    return "auto", False
+
+
 def _has_session_sources(source_filter: str = "auto") -> bool:
+    source_filter = _normalize_source_filter(source_filter)
     if source_filter == "claude":
         return CLAUDE_DIR.exists()
     if source_filter == "codex":
@@ -88,6 +123,7 @@ def _has_session_sources(source_filter: str = "auto") -> bool:
 
 
 def _filter_projects_by_source(projects: list[dict], source_filter: str) -> list[dict]:
+    source_filter = _normalize_source_filter(source_filter)
     if source_filter == "auto":
         return projects
     return [p for p in projects if p.get("source", "claude") == source_filter]
@@ -160,10 +196,26 @@ def _build_status_next_steps(
 
     if stage == "configure":
         projects_confirmed = config.get("projects_confirmed", False)
+        configured_source = config.get("source")
+        source_confirmed = _is_explicit_source_choice(configured_source)
+        list_command = (
+            f"dataclaw list --source {configured_source}" if source_confirmed else "dataclaw list"
+        )
         steps = []
+        if not source_confirmed:
+            steps.append(
+                "Ask the user to explicitly choose export source scope: Claude Code, Codex, or both. "
+                "Then set it: dataclaw config --source <claude|codex|both>. "
+                "Do not run export until source scope is explicitly confirmed."
+            )
+        else:
+            steps.append(
+                f"Source scope is currently set to '{configured_source}'. "
+                "If the user wants a different scope, run: dataclaw config --source <claude|codex|both>."
+            )
         if not projects_confirmed:
             steps.append(
-                "Run: dataclaw list — then send the FULL project/folder list to the user in your next message "
+                f"Run: {list_command} — then send the FULL project/folder list to the user in your next message "
                 "(name, source, sessions, size, excluded), and ask which to EXCLUDE."
             )
             steps.append(
@@ -243,6 +295,7 @@ def _merge_config_list(config: DataClawConfig, key: str, new_values: list[str]) 
 
 def configure(
     repo: str | None = None,
+    source: str | None = None,
     exclude: list[str] | None = None,
     redact: list[str] | None = None,
     redact_usernames: list[str] | None = None,
@@ -252,6 +305,8 @@ def configure(
     config = load_config()
     if repo is not None:
         config["repo"] = repo
+    if source is not None:
+        config["source"] = source
     if exclude is not None:
         _merge_config_list(config, "excluded_projects", exclude)
     if redact is not None:
@@ -537,6 +592,7 @@ def status() -> None:
         "hf_logged_in": hf_user is not None,
         "hf_username": hf_user,
         "repo": repo_id,
+        "source": config.get("source"),
         "projects_confirmed": config.get("projects_confirmed", False),
         "last_export": config.get("last_export"),
         "next_steps": next_steps,
@@ -1023,22 +1079,25 @@ def prep(source_filter: str = "auto") -> None:
     Designed to be called by an agent which handles the interactive parts.
     Outputs pure JSON to stdout so agents can parse it directly.
     """
-    if not _has_session_sources(source_filter):
-        if source_filter == "claude":
+    config = load_config()
+    resolved_source_choice, source_explicit = _resolve_source_choice(source_filter, config)
+    effective_source_filter = _normalize_source_filter(resolved_source_choice)
+
+    if not _has_session_sources(effective_source_filter):
+        if effective_source_filter == "claude":
             err = "~/.claude was not found."
-        elif source_filter == "codex":
+        elif effective_source_filter == "codex":
             err = "~/.codex was not found."
         else:
             err = "Neither ~/.claude nor ~/.codex was found."
         print(json.dumps({"error": err}))
         sys.exit(1)
 
-    projects = _filter_projects_by_source(discover_projects(), source_filter)
+    projects = _filter_projects_by_source(discover_projects(), effective_source_filter)
     if not projects:
-        print(json.dumps({"error": f"No {_source_label(source_filter)} sessions found."}))
+        print(json.dumps({"error": f"No {_source_label(effective_source_filter)} sessions found."}))
         sys.exit(1)
 
-    config = load_config()
     excluded = set(config.get("excluded_projects", []))
 
     # Use _compute_stage to determine where we are
@@ -1049,7 +1108,10 @@ def prep(source_filter: str = "auto") -> None:
         repo_id = default_repo_name(hf_user)
 
     # Build contextual next_steps
-    next_steps, next_command = _build_status_next_steps(stage, config, hf_user, repo_id)
+    stage_config = dict(config)
+    if source_explicit:
+        stage_config["source"] = resolved_source_choice
+    next_steps, next_command = _build_status_next_steps(stage, stage_config, hf_user, repo_id)
 
     # Persist stage
     config["stage"] = stage
@@ -1060,7 +1122,9 @@ def prep(source_filter: str = "auto") -> None:
         "stage_number": stage_number,
         "total_stages": 4,
         "next_command": next_command,
-        "source_filter": source_filter,
+        "requested_source_filter": source_filter,
+        "source_filter": resolved_source_choice,
+        "source_selection_confirmed": source_explicit,
         "hf_logged_in": hf_user is not None,
         "hf_username": hf_user,
         "repo": repo_id,
@@ -1087,7 +1151,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     prep_parser = sub.add_parser("prep", help="Data prep — discover projects, detect HF, output JSON")
-    prep_parser.add_argument("--source", choices=["auto", "claude", "codex"], default="auto")
+    prep_parser.add_argument("--source", choices=SOURCE_CHOICES, default="auto")
     sub.add_parser("status", help="Show current stage and next steps (JSON)")
     cf = sub.add_parser("confirm", help="Scan for PII, summarize export, and unlock pushing (JSON)")
     cf.add_argument("--file", "-f", type=Path, default=None, help="Path to export JSONL file")
@@ -1106,13 +1170,15 @@ def main() -> None:
     cf.add_argument("--attest-asked-sensitive", action="store_true", help=argparse.SUPPRESS)
     cf.add_argument("--attest-asked-manual-scan", action="store_true", help=argparse.SUPPRESS)
     list_parser = sub.add_parser("list", help="List all projects")
-    list_parser.add_argument("--source", choices=["auto", "claude", "codex"], default="auto")
+    list_parser.add_argument("--source", choices=SOURCE_CHOICES, default="auto")
 
     us = sub.add_parser("update-skill", help="Install/update the dataclaw skill for a coding agent")
     us.add_argument("target", choices=["claude"], help="Agent to install skill for")
 
     cfg = sub.add_parser("config", help="View or set config")
     cfg.add_argument("--repo", type=str, help="Set HF repo")
+    cfg.add_argument("--source", choices=sorted(EXPLICIT_SOURCE_CHOICES),
+                     help="Set export source scope explicitly: claude, codex, or both")
     cfg.add_argument("--exclude", type=str, help="Comma-separated projects to exclude")
     cfg.add_argument("--redact", type=str,
                      help="Comma-separated strings to always redact (API keys, usernames, domains)")
@@ -1126,7 +1192,7 @@ def main() -> None:
     for target in (exp, parser):
         target.add_argument("--output", "-o", type=Path, default=None)
         target.add_argument("--repo", "-r", type=str, default=None)
-        target.add_argument("--source", choices=["auto", "claude", "codex"], default="auto")
+        target.add_argument("--source", choices=SOURCE_CHOICES, default="auto")
         target.add_argument("--all-projects", action="store_true")
         target.add_argument("--no-thinking", action="store_true")
         target.add_argument("--no-push", action="store_true")
@@ -1181,7 +1247,9 @@ def main() -> None:
         return
 
     if command == "list":
-        list_projects(source_filter=args.source)
+        config = load_config()
+        resolved_source_choice, _ = _resolve_source_choice(args.source, config)
+        list_projects(source_filter=resolved_source_choice)
         return
 
     if command == "config":
@@ -1199,12 +1267,20 @@ def _parse_csv_arg(value: str | None) -> list[str] | None:
 
 def _handle_config(args) -> None:
     """Handle the config subcommand."""
-    has_changes = args.repo or args.exclude or args.redact or args.redact_usernames or args.confirm_projects
+    has_changes = (
+        args.repo
+        or args.source
+        or args.exclude
+        or args.redact
+        or args.redact_usernames
+        or args.confirm_projects
+    )
     if not has_changes:
         print(json.dumps(_mask_config_for_display(load_config()), indent=2))
         return
     configure(
         repo=args.repo,
+        source=args.source,
         exclude=_parse_csv_arg(args.exclude),
         redact=_parse_csv_arg(args.redact),
         redact_usernames=_parse_csv_arg(args.redact_usernames),
@@ -1214,9 +1290,31 @@ def _handle_config(args) -> None:
 
 def _run_export(args) -> None:
     """Run the export flow — discover, anonymize, export, optionally push."""
+    config = load_config()
+    source_choice, source_explicit = _resolve_source_choice(args.source, config)
+    source_filter = _normalize_source_filter(source_choice)
+
+    if not source_explicit:
+        print(json.dumps({
+            "error": "Source scope is not confirmed yet.",
+            "hint": (
+                "Explicitly choose one source scope before exporting: "
+                "`claude`, `codex`, or `both`."
+            ),
+            "required_action": (
+                "Ask the user whether to export Claude Code, Codex, or both. "
+                "Then run `dataclaw config --source <claude|codex|both>` "
+                "or pass `--source <claude|codex|both>` on the export command."
+            ),
+            "allowed_sources": sorted(EXPLICIT_SOURCE_CHOICES),
+            "blocked_on_step": "Step 2/6",
+            "process_steps": SETUP_TO_PUBLISH_STEPS,
+            "next_command": "dataclaw config --source both",
+        }, indent=2))
+        sys.exit(1)
+
     # Gate: require `dataclaw confirm` before pushing
     if not args.no_push:
-        config = load_config()
         if args.attest_user_approved_publish and not args.publish_attestation:
             print(json.dumps({
                 "error": "Deprecated publish attestation flag was provided.",
@@ -1290,28 +1388,27 @@ def _run_export(args) -> None:
     print("  DataClaw — Claude/Codex Log Exporter")
     print("=" * 50)
 
-    if not _has_session_sources(args.source):
-        if args.source == "claude":
+    if not _has_session_sources(source_filter):
+        if source_filter == "claude":
             print(f"Error: {CLAUDE_DIR} not found.", file=sys.stderr)
-        elif args.source == "codex":
+        elif source_filter == "codex":
             print(f"Error: {CODEX_DIR} not found.", file=sys.stderr)
         else:
             print("Error: neither ~/.claude nor ~/.codex was found.", file=sys.stderr)
         sys.exit(1)
 
-    projects = _filter_projects_by_source(discover_projects(), args.source)
+    projects = _filter_projects_by_source(discover_projects(), source_filter)
     if not projects:
-        print(f"No {_source_label(args.source)} sessions found.", file=sys.stderr)
+        print(f"No {_source_label(source_filter)} sessions found.", file=sys.stderr)
         sys.exit(1)
-
-    config = load_config()
 
     if not args.all_projects and not config.get("projects_confirmed", False):
         excluded = set(config.get("excluded_projects", []))
+        list_command = f"dataclaw list --source {source_choice}"
         print(json.dumps({
             "error": "Project selection is not confirmed yet.",
             "hint": (
-                "Run `dataclaw list`, present the full project list to the user, discuss which projects to exclude, then run "
+                f"Run `{list_command}`, present the full project list to the user, discuss which projects to exclude, then run "
                 "`dataclaw config --exclude \"p1,p2\"` or `dataclaw config --confirm-projects`."
             ),
             "required_action": (
@@ -1328,7 +1425,7 @@ def _run_export(args) -> None:
                 }
                 for p in projects
             ],
-            "blocked_on_step": "Step 2/5",
+            "blocked_on_step": "Step 3/6",
             "process_steps": SETUP_TO_PUBLISH_STEPS,
             "next_command": "dataclaw config --confirm-projects",
         }, indent=2))
@@ -1338,7 +1435,7 @@ def _run_export(args) -> None:
     total_size = sum(p["total_size_bytes"] for p in projects)
     print(f"\nFound {total_sessions} sessions across {len(projects)} projects "
           f"({_format_size(total_size)} raw)")
-    print(f"Source filter: {args.source}")
+    print(f"Source scope: {source_choice}")
 
     # Resolve repo — CLI flag > config > auto-detect from HF username
     repo_id = args.repo or config.get("repo")
@@ -1405,6 +1502,7 @@ def _run_export(args) -> None:
         "timestamp": meta["exported_at"],
         "sessions": meta["sessions"],
         "models": meta["models"],
+        "source": source_choice,
     }
     if args.no_push:
         config["stage"] = "review"
@@ -1419,6 +1517,7 @@ def _run_export(args) -> None:
             "stage_number": 3,
             "total_stages": 4,
             "sessions": meta["sessions"],
+            "source": source_choice,
             "output_file": abs_path,
             "pii_commands": _build_pii_commands(output_path),
             "next_steps": next_steps,

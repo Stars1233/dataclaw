@@ -5,3 +5,11 @@ dist/
 build/
 .DS_Store
 *.jsonl
+
+# DataClaw local export/review artifacts
+dataclaw_conversations.jsonl
+dataclaw_export.jsonl
+findings.json
+
+# Local tooling state
+.desloppify/

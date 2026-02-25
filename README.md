@@ -28,8 +28,13 @@ STEP 3 — START
   dataclaw prep
   Every dataclaw command outputs next_steps in its JSON — follow them through the entire flow.
 
-STEP 3A — PRESENT ALL FOLDERS (REQUIRED BEFORE EXPORT)
-  dataclaw list
+STEP 3A — CHOOSE SOURCE SCOPE (REQUIRED BEFORE EXPORT)
+  Ask the user explicitly: Claude Code, Codex, or both?
+  dataclaw config --source "claude|codex|both"
+  Do not export until source scope is explicitly confirmed.
+
+STEP 3B — PRESENT ALL FOLDERS (REQUIRED BEFORE EXPORT)
+  dataclaw list --source "claude|codex|both"
   Send the FULL project/folder list to the user in a message (name, source, sessions, size, excluded).
   Ask which projects to exclude.
   dataclaw config --exclude "project1,project2" OR dataclaw config --confirm-projects
@@ -47,7 +52,7 @@ STEP 5 — PUBLISH (ONLY AFTER EXPLICIT USER APPROVAL)
   Never publish unless the user explicitly says yes.
 
 IF ANY COMMAND FAILS DUE TO A SKIPPED STEP:
-  Restate the 5-step checklist above and resume from the blocked step (do not skip ahead).
+  Restate the 6-step checklist above and resume from the blocked step (do not skip ahead).
 
 IMPORTANT: Never run bare `huggingface-cli login` — always use --token.
 IMPORTANT: Always export with --no-push first and review for PII before publishing.
@@ -64,7 +69,8 @@ huggingface-cli login --token YOUR_TOKEN
 
 # See your projects
 dataclaw prep
-dataclaw list  # Present full list and confirm folder scope before export
+dataclaw config --source both  # REQUIRED: choose claude, codex, or both
+dataclaw list --source both  # Present full list and confirm folder scope before export
 
 # Configure
 dataclaw config --repo username/my-personal-codex-data
@@ -99,17 +105,21 @@ dataclaw export --publish-attestation "User explicitly approved publishing to Hu
 |---------|-------------|
 | `dataclaw status` | Show current stage and next steps (JSON) |
 | `dataclaw prep` | Discover projects, check HF auth, output JSON |
+| `dataclaw prep --source both` | Prep with both Claude + Codex explicitly selected |
 | `dataclaw prep --source codex` | Prep using only Codex sessions |
 | `dataclaw prep --source claude` | Prep using only Claude Code sessions |
 | `dataclaw list` | List all projects with exclusion status |
+| `dataclaw list --source both` | List both Claude and Codex projects |
 | `dataclaw list --source codex` | List only Codex projects |
 | `dataclaw config` | Show current config |
 | `dataclaw config --repo user/my-personal-codex-data` | Set HF repo |
+| `dataclaw config --source both` | REQUIRED source scope selection (`claude`, `codex`, or `both`) |
 | `dataclaw config --exclude "a,b"` | Add excluded projects (appends) |
 | `dataclaw config --redact "str1,str2"` | Add strings to always redact (appends) |
 | `dataclaw config --redact-usernames "u1,u2"` | Add usernames to anonymize (appends) |
 | `dataclaw config --confirm-projects` | Mark project selection as confirmed |
 | `dataclaw export --no-push` | Export locally only (always do this first) |
+| `dataclaw export --source both --no-push` | Export Claude + Codex sessions locally |
 | `dataclaw export --source codex --no-push` | Export only Codex sessions locally |
 | `dataclaw export --source claude --no-push` | Export only Claude Code sessions locally |
 | `dataclaw confirm --full-name "NAME" --attest-full-name "..." --attest-sensitive "..." --attest-manual-scan "..."` | Scan for PII, run exact-name privacy check, verify review attestations, unlock pushing |

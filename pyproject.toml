@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dataclaw"
 version = "0.2.1"
-description = "Export your Claude Code conversations to Hugging Face as structured training data"
+description = "Export your Claude Code and Codex conversations to Hugging Face as structured training data"
 requires-python = ">=3.10"
 license = "MIT"
 readme = "README.md"

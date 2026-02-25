@@ -13,6 +13,7 @@ class DataClawConfig(TypedDict, total=False):
     """Expected shape of the config dict."""
 
     repo: str | None
+    source: str | None  # "claude" | "codex" | "both"
     excluded_projects: list[str]
     redact_strings: list[str]
     redact_usernames: list[str]
@@ -23,6 +24,7 @@ class DataClawConfig(TypedDict, total=False):
 
 DEFAULT_CONFIG: DataClawConfig = {
     "repo": None,
+    "source": None,
     "excluded_projects": [],
     "redact_strings": [],
 }
