@@ -751,6 +751,63 @@ class _CodexParseState:
     raw_cwd: str = UNKNOWN_CODEX_CWD
     max_input_tokens: int = 0
     max_output_tokens: int = 0
+    tool_result_map: dict[str, dict] = dataclasses.field(default_factory=dict)
+
+
+def _build_codex_tool_result_map(entries: list[dict[str, Any]], anonymizer: Anonymizer) -> dict[str, dict]:
+    """Pre-pass: build call_id -> {output, status} from function_call_output and custom_tool_call_output."""
+    result: dict[str, dict] = {}
+    for entry in entries:
+        if entry.get("type") != "response_item":
+            continue
+        p = entry.get("payload", {})
+        pt = p.get("type")
+        call_id = p.get("call_id")
+        if not call_id:
+            continue
+
+        if pt == "function_call_output":
+            raw = p.get("output", "")
+            # Parse "Exit code: N\nWall time: ...\nOutput:\n..." format
+            out: dict = {}
+            lines = raw.splitlines()
+            output_lines: list[str] = []
+            in_output = False
+            for line in lines:
+                if line.startswith("Exit code: "):
+                    try:
+                        out["exit_code"] = int(line[len("Exit code: "):].strip())
+                    except ValueError:
+                        out["exit_code"] = line[len("Exit code: "):].strip()
+                elif line.startswith("Wall time: "):
+                    out["wall_time"] = line[len("Wall time: "):].strip()
+                elif line == "Output:":
+                    in_output = True
+                elif in_output:
+                    output_lines.append(line)
+            if output_lines:
+                out["output"] = anonymizer.text("\n".join(output_lines).strip())
+            result[call_id] = {"output": out, "status": "success"}
+
+        elif pt == "custom_tool_call_output":
+            raw = p.get("output", "")
+            out = {}
+            try:
+                parsed = json.loads(raw)
+                text = parsed.get("output", "")
+                if text:
+                    out["output"] = anonymizer.text(str(text))
+                meta = parsed.get("metadata", {})
+                if "exit_code" in meta:
+                    out["exit_code"] = meta["exit_code"]
+                if "duration_seconds" in meta:
+                    out["duration_seconds"] = meta["duration_seconds"]
+            except (json.JSONDecodeError, AttributeError):
+                if raw:
+                    out["output"] = anonymizer.text(raw)
+            result[call_id] = {"output": out, "status": "success"}
+
+    return result
 
 
 def _parse_codex_session_file(
@@ -772,34 +829,38 @@ def _parse_codex_session_file(
     )
 
     try:
-        for entry in _iter_jsonl(filepath):
-            timestamp = _normalize_timestamp(entry.get("timestamp"))
-            entry_type = entry.get("type")
-
-            if entry_type == "session_meta":
-                _handle_codex_session_meta(state, entry, filepath, anonymizer)
-            elif entry_type == "turn_context":
-                _handle_codex_turn_context(state, entry, anonymizer)
-            elif entry_type == "response_item":
-                _handle_codex_response_item(state, entry, anonymizer, include_thinking)
-            elif entry_type == "event_msg":
-                payload = entry.get("payload", {})
-                event_type = payload.get("type")
-                if event_type == "token_count":
-                    _handle_codex_token_count(state, payload)
-                elif event_type == "agent_reasoning" and include_thinking:
-                    thinking = payload.get("text")
-                    if isinstance(thinking, str) and thinking.strip():
-                        cleaned = anonymizer.text(thinking.strip())
-                        if cleaned not in state._pending_thinking_seen:
-                            state._pending_thinking_seen.add(cleaned)
-                            state.pending_thinking.append(cleaned)
-                elif event_type == "user_message":
-                    _handle_codex_user_message(state, payload, timestamp, anonymizer)
-                elif event_type == "agent_message":
-                    _handle_codex_agent_message(state, payload, timestamp, anonymizer, include_thinking)
+        entries = list(_iter_jsonl(filepath))
     except OSError:
         return None
+
+    state.tool_result_map = _build_codex_tool_result_map(entries, anonymizer)
+
+    for entry in entries:
+        timestamp = _normalize_timestamp(entry.get("timestamp"))
+        entry_type = entry.get("type")
+
+        if entry_type == "session_meta":
+            _handle_codex_session_meta(state, entry, filepath, anonymizer)
+        elif entry_type == "turn_context":
+            _handle_codex_turn_context(state, entry, anonymizer)
+        elif entry_type == "response_item":
+            _handle_codex_response_item(state, entry, anonymizer, include_thinking)
+        elif entry_type == "event_msg":
+            payload = entry.get("payload", {})
+            event_type = payload.get("type")
+            if event_type == "token_count":
+                _handle_codex_token_count(state, payload)
+            elif event_type == "agent_reasoning" and include_thinking:
+                thinking = payload.get("text")
+                if isinstance(thinking, str) and thinking.strip():
+                    cleaned = anonymizer.text(thinking.strip())
+                    if cleaned not in state._pending_thinking_seen:
+                        state._pending_thinking_seen.add(cleaned)
+                        state.pending_thinking.append(cleaned)
+            elif event_type == "user_message":
+                _handle_codex_user_message(state, payload, timestamp, anonymizer)
+            elif event_type == "agent_message":
+                _handle_codex_agent_message(state, payload, timestamp, anonymizer, include_thinking)
 
     state.stats["input_tokens"] = state.max_input_tokens
     state.stats["output_tokens"] = state.max_output_tokens
@@ -866,6 +927,18 @@ def _handle_codex_response_item(
             {
                 "tool": tool_name,
                 "input": _parse_tool_input(tool_name, args_data, anonymizer),
+                "_call_id": payload.get("call_id"),
+            }
+        )
+    elif item_type == "custom_tool_call":
+        tool_name = payload.get("name")
+        raw_input = payload.get("input", "")
+        inp = {"patch": anonymizer.text(raw_input)} if isinstance(raw_input, str) else _parse_tool_input(tool_name, raw_input, anonymizer)
+        state.pending_tool_uses.append(
+            {
+                "tool": tool_name,
+                "input": inp,
+                "_call_id": payload.get("call_id"),
             }
         )
     elif item_type == "reasoning" and include_thinking:
@@ -910,6 +983,19 @@ def _handle_codex_user_message(
         _update_time_bounds(state.metadata, timestamp)
 
 
+def _resolve_codex_tool_uses(state: _CodexParseState) -> list[dict]:
+    """Attach outputs from tool_result_map and strip internal _call_id field."""
+    resolved = []
+    for tu in state.pending_tool_uses:
+        call_id = tu.pop("_call_id", None)
+        if call_id and call_id in state.tool_result_map:
+            r = state.tool_result_map[call_id]
+            tu["output"] = r["output"]
+            tu["status"] = r["status"]
+        resolved.append(tu)
+    return resolved
+
+
 def _handle_codex_agent_message(
     state: _CodexParseState, payload: dict[str, Any],
     timestamp: str | None, anonymizer: Anonymizer, include_thinking: bool,
@@ -921,7 +1007,7 @@ def _handle_codex_agent_message(
     if state.pending_thinking and include_thinking:
         msg["thinking"] = "\n\n".join(state.pending_thinking)
     if state.pending_tool_uses:
-        msg["tool_uses"] = list(state.pending_tool_uses)
+        msg["tool_uses"] = _resolve_codex_tool_uses(state)
 
     if len(msg) > 1:
         msg["timestamp"] = timestamp
@@ -943,7 +1029,7 @@ def _flush_codex_pending(state: _CodexParseState, timestamp: str | None) -> None
     if state.pending_thinking:
         msg["thinking"] = "\n\n".join(state.pending_thinking)
     if state.pending_tool_uses:
-        msg["tool_uses"] = list(state.pending_tool_uses)
+        msg["tool_uses"] = _resolve_codex_tool_uses(state)
 
     state.messages.append(msg)
     state.stats["assistant_messages"] += 1
