@@ -437,6 +437,7 @@ class TestDiscoverProjects:
         monkeypatch.setattr("dataclaw.parser._OPENCODE_PROJECT_INDEX", {})
         monkeypatch.setattr("dataclaw.parser.OPENCLAW_AGENTS_DIR", tmp_path / "no-openclaw-agents")
         monkeypatch.setattr("dataclaw.parser._OPENCLAW_PROJECT_INDEX", {})
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", tmp_path / "no-custom")
 
     def _write_opencode_db(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -987,6 +988,7 @@ class TestDiscoverSubagentProjects:
         monkeypatch.setattr("dataclaw.parser._OPENCODE_PROJECT_INDEX", {})
         monkeypatch.setattr("dataclaw.parser.OPENCLAW_AGENTS_DIR", tmp_path / "no-openclaw-agents")
         monkeypatch.setattr("dataclaw.parser._OPENCLAW_PROJECT_INDEX", {})
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", tmp_path / "no-custom")
 
     def test_discover_includes_subagent_sessions(self, tmp_path, monkeypatch, mock_anonymizer):
         self._disable_codex(tmp_path, monkeypatch)
@@ -1585,6 +1587,7 @@ class TestDiscoverOpenclawProjects:
         monkeypatch.setattr("dataclaw.parser.OPENCODE_DB_PATH", tmp_path / "no-opencode.db")
         monkeypatch.setattr("dataclaw.parser._OPENCODE_PROJECT_INDEX", {})
         monkeypatch.setattr("dataclaw.parser._OPENCLAW_PROJECT_INDEX", {})
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", tmp_path / "no-custom")
 
     def test_discover_openclaw_projects(self, tmp_path, monkeypatch, mock_anonymizer):
         self._disable_others(tmp_path, monkeypatch)
@@ -1657,3 +1660,117 @@ class TestDiscoverOpenclawProjects:
         projects = discover_projects()
         assert len(projects) == 1
         assert projects[0]["session_count"] == 2
+
+
+class TestDiscoverCustomProjects:
+    def _disable_others(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", tmp_path / "no-claude")
+        monkeypatch.setattr("dataclaw.parser.CODEX_SESSIONS_DIR", tmp_path / "no-codex-sessions")
+        monkeypatch.setattr("dataclaw.parser.CODEX_ARCHIVED_DIR", tmp_path / "no-codex-archived")
+        monkeypatch.setattr("dataclaw.parser._CODEX_PROJECT_INDEX", {})
+        monkeypatch.setattr("dataclaw.parser.GEMINI_DIR", tmp_path / "no-gemini")
+        monkeypatch.setattr("dataclaw.parser.OPENCODE_DB_PATH", tmp_path / "no-opencode.db")
+        monkeypatch.setattr("dataclaw.parser._OPENCODE_PROJECT_INDEX", {})
+        monkeypatch.setattr("dataclaw.parser.OPENCLAW_AGENTS_DIR", tmp_path / "no-openclaw-agents")
+        monkeypatch.setattr("dataclaw.parser._OPENCLAW_PROJECT_INDEX", {})
+
+    def _make_valid_session(self, session_id="s1", model="gpt-4", content="hello"):
+        return json.dumps({
+            "session_id": session_id,
+            "model": model,
+            "messages": [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "hi there"},
+            ],
+            "stats": {"user_messages": 1, "assistant_messages": 1, "tool_uses": 0,
+                       "input_tokens": 10, "output_tokens": 5},
+        })
+
+    def test_discover_custom_projects(self, tmp_path, monkeypatch, mock_anonymizer):
+        self._disable_others(tmp_path, monkeypatch)
+        custom_dir = tmp_path / "custom"
+        proj = custom_dir / "my-project"
+        proj.mkdir(parents=True)
+        (proj / "sessions.jsonl").write_text(
+            self._make_valid_session("s1") + "\n" + self._make_valid_session("s2") + "\n"
+        )
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        projects = discover_projects()
+        assert len(projects) == 1
+        assert projects[0]["display_name"] == "custom:my-project"
+        assert projects[0]["session_count"] == 2
+        assert projects[0]["source"] == "custom"
+
+    def test_discover_skips_empty_dir(self, tmp_path, monkeypatch):
+        self._disable_others(tmp_path, monkeypatch)
+        custom_dir = tmp_path / "custom"
+        (custom_dir / "empty-project").mkdir(parents=True)
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        projects = discover_projects()
+        assert len(projects) == 0
+
+    def test_discover_missing_dir(self, tmp_path, monkeypatch):
+        self._disable_others(tmp_path, monkeypatch)
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", tmp_path / "nonexistent")
+        projects = discover_projects()
+        assert len(projects) == 0
+
+    def test_parse_valid_sessions(self, tmp_path, monkeypatch, mock_anonymizer):
+        custom_dir = tmp_path / "custom"
+        proj = custom_dir / "test-proj"
+        proj.mkdir(parents=True)
+        (proj / "data.jsonl").write_text(
+            self._make_valid_session("s1") + "\n" + self._make_valid_session("s2", model="o1") + "\n"
+        )
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        sessions = parse_project_sessions("test-proj", mock_anonymizer, source="custom")
+        assert len(sessions) == 2
+        assert sessions[0]["session_id"] == "s1"
+        assert sessions[1]["model"] == "o1"
+        assert sessions[0]["project"] == "custom:test-proj"
+        assert sessions[0]["source"] == "custom"
+
+    def test_parse_skips_missing_fields(self, tmp_path, monkeypatch, mock_anonymizer):
+        custom_dir = tmp_path / "custom"
+        proj = custom_dir / "test-proj"
+        proj.mkdir(parents=True)
+        valid = self._make_valid_session("s1")
+        no_model = json.dumps({"session_id": "s2", "messages": []})
+        no_messages = json.dumps({"session_id": "s3", "model": "m"})
+        no_session_id = json.dumps({"model": "m", "messages": []})
+        (proj / "data.jsonl").write_text(
+            "\n".join([valid, no_model, no_messages, no_session_id]) + "\n"
+        )
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        sessions = parse_project_sessions("test-proj", mock_anonymizer, source="custom")
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "s1"
+
+    def test_parse_skips_invalid_json(self, tmp_path, monkeypatch, mock_anonymizer):
+        custom_dir = tmp_path / "custom"
+        proj = custom_dir / "test-proj"
+        proj.mkdir(parents=True)
+        valid = self._make_valid_session("s1")
+        (proj / "data.jsonl").write_text(valid + "\n" + "not-json\n")
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        sessions = parse_project_sessions("test-proj", mock_anonymizer, source="custom")
+        assert len(sessions) == 1
+
+    def test_parse_multiple_files(self, tmp_path, monkeypatch, mock_anonymizer):
+        custom_dir = tmp_path / "custom"
+        proj = custom_dir / "test-proj"
+        proj.mkdir(parents=True)
+        (proj / "a.jsonl").write_text(self._make_valid_session("s1") + "\n")
+        (proj / "b.jsonl").write_text(self._make_valid_session("s2") + "\n")
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        sessions = parse_project_sessions("test-proj", mock_anonymizer, source="custom")
+        assert len(sessions) == 2
+        ids = {s["session_id"] for s in sessions}
+        assert ids == {"s1", "s2"}
+
+    def test_parse_nonexistent_project(self, tmp_path, monkeypatch, mock_anonymizer):
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir(parents=True)
+        monkeypatch.setattr("dataclaw.parser.CUSTOM_DIR", custom_dir)
+        sessions = parse_project_sessions("nope", mock_anonymizer, source="custom")
+        assert sessions == []

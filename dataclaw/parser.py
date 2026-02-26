@@ -19,6 +19,7 @@ CODEX_SOURCE = "codex"
 GEMINI_SOURCE = "gemini"
 OPENCODE_SOURCE = "opencode"
 OPENCLAW_SOURCE = "openclaw"
+CUSTOM_SOURCE = "custom"
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -37,6 +38,8 @@ UNKNOWN_OPENCODE_CWD = "<unknown-cwd>"
 OPENCLAW_DIR = Path.home() / ".openclaw"
 OPENCLAW_AGENTS_DIR = OPENCLAW_DIR / "agents"
 UNKNOWN_OPENCLAW_CWD = "<unknown-cwd>"
+
+CUSTOM_DIR = Path.home() / ".dataclaw" / "custom"
 
 _CODEX_PROJECT_INDEX: dict[str, list[Path]] = {}
 _GEMINI_HASH_MAP: dict[str, str] = {}
@@ -129,6 +132,7 @@ def discover_projects() -> list[dict]:
     projects.extend(_discover_gemini_projects())
     projects.extend(_discover_opencode_projects())
     projects.extend(_discover_openclaw_projects())
+    projects.extend(_discover_custom_projects())
     return sorted(projects, key=lambda p: (p["display_name"], p["source"]))
 
 
@@ -246,6 +250,89 @@ def _discover_openclaw_projects() -> list[dict]:
     return projects
 
 
+def _discover_custom_projects() -> list[dict]:
+    if not CUSTOM_DIR.exists():
+        return []
+
+    projects = []
+    for project_dir in sorted(CUSTOM_DIR.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        jsonl_files = list(project_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            continue
+        session_count = 0
+        total_size = 0
+        for f in jsonl_files:
+            total_size += f.stat().st_size
+            try:
+                session_count += sum(1 for line in f.open() if line.strip())
+            except OSError:
+                pass
+        if session_count == 0:
+            continue
+        projects.append(
+            {
+                "dir_name": project_dir.name,
+                "display_name": f"custom:{project_dir.name}",
+                "session_count": session_count,
+                "total_size_bytes": total_size,
+                "source": CUSTOM_SOURCE,
+            }
+        )
+    return projects
+
+
+def _parse_custom_sessions(
+    project_dir_name: str,
+    anonymizer: Anonymizer,
+) -> list[dict]:
+    project_path = CUSTOM_DIR / project_dir_name
+    if not project_path.exists():
+        return []
+
+    required_fields = {"session_id", "model", "messages"}
+    sessions = []
+    for jsonl_file in sorted(project_path.glob("*.jsonl")):
+        try:
+            for line_num, line in enumerate(jsonl_file.open(), 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    session = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "custom:%s: %s line %d: invalid JSON, skipping",
+                        project_dir_name, jsonl_file.name, line_num,
+                    )
+                    continue
+                if not isinstance(session, dict):
+                    logger.warning(
+                        "custom:%s: %s line %d: not a JSON object, skipping",
+                        project_dir_name, jsonl_file.name, line_num,
+                    )
+                    continue
+                missing = required_fields - session.keys()
+                if missing:
+                    logger.warning(
+                        "custom:%s: %s line %d: missing required fields %s, skipping",
+                        project_dir_name, jsonl_file.name, line_num, sorted(missing),
+                    )
+                    continue
+                session["project"] = f"custom:{project_dir_name}"
+                session["source"] = CUSTOM_SOURCE
+                # Redact message content through the anonymizer
+                for msg in session.get("messages", []):
+                    if "content" in msg and isinstance(msg["content"], str):
+                        redacted, _ = redact_text(msg["content"])
+                        msg["content"] = anonymizer.text(redacted)
+                sessions.append(session)
+        except OSError:
+            logger.warning("custom:%s: failed to read %s", project_dir_name, jsonl_file.name)
+    return sessions
+
+
 def parse_project_sessions(
     project_dir_name: str,
     anonymizer: Anonymizer,
@@ -253,6 +340,9 @@ def parse_project_sessions(
     source: str = CLAUDE_SOURCE,
 ) -> list[dict]:
     """Parse all sessions for a project into structured dicts."""
+    if source == CUSTOM_SOURCE:
+        return _parse_custom_sessions(project_dir_name, anonymizer)
+
     if source == OPENCLAW_SOURCE:
         index = _get_openclaw_project_index()
         session_files = index.get(project_dir_name, [])
