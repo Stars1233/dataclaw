@@ -507,6 +507,120 @@ def _parse_subagent_session(
     return _make_session_result(metadata, messages, stats)
 
 
+def _parse_gemini_tool_call(tc: dict, anonymizer: Anonymizer) -> dict:
+    """Parse a Gemini tool call into a structured dict with input/output/status."""
+    name = tc.get("name")
+    args = tc.get("args", {})
+    status = tc.get("status", "unknown")
+    result_list = tc.get("result") or []
+
+    # --- Extract output text from functionResponse ---
+    output_text: str | None = None
+    extra_texts: list[str] = []
+    for item in result_list:
+        if not isinstance(item, dict):
+            continue
+        if "functionResponse" in item:
+            resp = item["functionResponse"].get("response", {})
+            output_text = resp.get("output")
+        elif "text" in item:
+            extra_texts.append(item["text"])
+
+    # --- Build structured input ---
+    if name == "read_file":
+        inp = {"file_path": anonymizer.path(args.get("file_path", ""))}
+    elif name == "write_file":
+        inp = {
+            "file_path": anonymizer.path(args.get("file_path", "")),
+            "content": anonymizer.text(args.get("content", "")),
+        }
+    elif name == "replace":
+        inp = {
+            "file_path": anonymizer.path(args.get("file_path", "")),
+            "old_string": anonymizer.text(args.get("old_string", "")),
+            "new_string": anonymizer.text(args.get("new_string", "")),
+            "expected_replacements": args.get("expected_replacements"),
+            "instruction": anonymizer.text(args.get("instruction", "")) if args.get("instruction") else None,
+        }
+        inp = {k: v for k, v in inp.items() if v is not None}
+    elif name == "run_shell_command":
+        inp = {"command": anonymizer.text(args.get("command", ""))}
+    elif name == "read_many_files":
+        inp = {"paths": [anonymizer.path(p) for p in args.get("paths", [])]}
+    elif name in ("search_file_content", "grep_search"):
+        inp = {k: anonymizer.text(str(v)) for k, v in args.items()}
+    elif name == "list_directory":
+        inp = {"dir_path": anonymizer.path(args.get("dir_path", ""))}
+        if args.get("ignore"):
+            inp["ignore"] = args["ignore"]
+    elif name == "glob":
+        inp = {"pattern": args.get("pattern", "")}
+    elif name in ("google_web_search", "web_fetch", "codebase_investigator"):
+        inp = {k: anonymizer.text(str(v)) for k, v in args.items()}
+    else:
+        inp = {k: anonymizer.text(str(v)) if isinstance(v, str) else v for k, v in args.items()}
+
+    # --- Build structured output ---
+    if name == "read_many_files":
+        # Parse "--- /path/to/file ---\n<content>" blocks from extra text parts
+        files: list[dict] = []
+        for raw in extra_texts:
+            lines = raw.split("\n")
+            current_path: str | None = None
+            content_lines: list[str] = []
+            for line in lines:
+                if line.startswith("--- ") and line.endswith(" ---"):
+                    if current_path is not None:
+                        files.append({
+                            "path": anonymizer.path(current_path),
+                            "content": anonymizer.text("\n".join(content_lines).strip()),
+                        })
+                    current_path = line[4:-4].strip()
+                    content_lines = []
+                else:
+                    content_lines.append(line)
+            if current_path is not None:
+                files.append({
+                    "path": anonymizer.path(current_path),
+                    "content": anonymizer.text("\n".join(content_lines).strip()),
+                })
+        out: dict = {"files": files}
+    elif name == "run_shell_command" and output_text:
+        # Parse "Command: ...\nDirectory: ...\nOutput: ...\nExit Code: ..." format
+        parsed: dict = {}
+        current_key: str | None = None
+        current_val: list[str] = []
+        for line in output_text.splitlines():
+            for key, prefix in (("command", "Command: "), ("directory", "Directory: "),
+                                 ("output", "Output: "), ("exit_code", "Exit Code: ")):
+                if line.startswith(prefix):
+                    if current_key:
+                        parsed[current_key] = "\n".join(current_val).strip()
+                    current_key = key
+                    current_val = [line[len(prefix):]]
+                    break
+            else:
+                if current_key:
+                    current_val.append(line)
+        if current_key:
+            parsed[current_key] = "\n".join(current_val).strip()
+        if "exit_code" in parsed:
+            try:
+                parsed["exit_code"] = int(parsed["exit_code"])
+            except ValueError:
+                pass
+        if "output" in parsed:
+            parsed["output"] = anonymizer.text(parsed["output"])
+        out = parsed
+    elif output_text is not None:
+        out = {"text": anonymizer.text(output_text)}
+    else:
+        out = {}
+
+    result: dict = {"tool": name, "input": inp, "output": out, "status": status}
+    return result
+
+
 def _parse_gemini_session_file(
     filepath: Path, anonymizer: Anonymizer, include_thinking: bool = True
 ) -> dict | None:
@@ -579,12 +693,7 @@ def _parse_gemini_session_file(
 
             tool_uses = []
             for tc in msg_data.get("toolCalls", []):
-                tool_name = tc.get("name")
-                args_data = tc.get("args", {})
-                tool_uses.append({
-                    "tool": tool_name,
-                    "input": _summarize_tool_input(tool_name, args_data, anonymizer)
-                })
+                tool_uses.append(_parse_gemini_tool_call(tc, anonymizer))
 
             if tool_uses:
                 msg["tool_uses"] = tool_uses
