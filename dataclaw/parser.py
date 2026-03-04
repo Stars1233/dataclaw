@@ -130,6 +130,10 @@ def _resolve_gemini_hash(project_hash: str) -> str:
     2. Fallback: extract path from session file tool call args.
     3. Last resort: return first 8 chars of the hash.
     """
+    if len(project_hash) != 64:
+        # project_hash is actually the full name in newer Gemini CLI versions
+        return project_hash
+
     global _GEMINI_HASH_MAP
     if not _GEMINI_HASH_MAP:
         _GEMINI_HASH_MAP = _build_gemini_hash_map()
