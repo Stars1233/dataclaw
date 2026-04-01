@@ -165,6 +165,9 @@ DataClaw applies multiple layers of protection:
 Automated redaction cannot catch everything — especially service-specific
 identifiers, third-party PII, or secrets in unusual formats.
 
+We recommend to convert the exported jsonl into yaml using the script in https://github.com/peteromallet/dataclaw/issues/1 ,
+then use tools such as [trufflehog](https://github.com/trufflesecurity/trufflehog) and [gitleaks](https://github.com/gitleaks/gitleaks) to scan it.
+
 To help improve redaction, report issues: https://github.com/banodoco/dataclaw/issues
 
 </details>
@@ -213,7 +216,7 @@ Each HF repo also includes a `metadata.json` with aggregate stats.
 <details>
 <summary><b>Finding datasets on Hugging Face</b></summary>
 
-All repos are named `{username}/my-personal-codex-data` and tagged `dataclaw`.
+All repos are tagged `dataclaw`.
 
 - **Browse all:** [huggingface.co/datasets?other=dataclaw](https://huggingface.co/datasets?other=dataclaw)
 - **Load one:**
