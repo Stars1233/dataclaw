@@ -8,6 +8,7 @@ from dataclaw.parsers.claude import (
     extract_assistant_content,
     extract_user_content,
     find_subagent_only_sessions,
+    find_subagent_sessions,
     parse_session_file,
     parse_subagent_session,
     process_entry,
@@ -363,6 +364,22 @@ class TestDiscoverProjects:
 
 
 class TestFindSubagentOnlySessions:
+    def test_finds_all_subagent_dirs(self, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "has-root.jsonl").write_text("{}\n")
+
+        attached_subagent_dir = project_dir / "has-root" / "subagents"
+        attached_subagent_dir.mkdir(parents=True)
+        (attached_subagent_dir / "agent-a1.jsonl").write_text("{}\n")
+
+        subagent_only_dir = project_dir / "subagent-only" / "subagents"
+        subagent_only_dir.mkdir(parents=True)
+        (subagent_only_dir / "agent-b1.jsonl").write_text("{}\n")
+
+        result = find_subagent_sessions(project_dir)
+        assert [entry.name for entry in result] == ["has-root", "subagent-only"]
+
     def test_finds_subagent_dirs_without_root_jsonl(self, tmp_path):
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -469,8 +486,59 @@ class TestParseSubagentSession:
         assert result["stats"]["input_tokens"] == 100
         assert result["stats"]["output_tokens"] == 40
 
+    def test_suffixes_session_id_when_root_session_exists(self, tmp_path, mock_anonymizer):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "same-session.jsonl").write_text("{}\n")
+
+        session_dir = project_dir / "same-session"
+        subagent_dir = session_dir / "subagents"
+        subagent_dir.mkdir(parents=True)
+        (subagent_dir / "agent-a.jsonl").write_text(
+            json.dumps(
+                make_subagent_entry("user", "Hello", "2026-01-10T10:00:00Z", cwd="/tmp/p", session_id="same-session")
+            )
+            + "\n"
+            + json.dumps(make_subagent_entry("assistant", "Hi", "2026-01-10T10:00:01Z"))
+            + "\n"
+        )
+
+        result = parse_subagent_session(session_dir, mock_anonymizer)
+        assert result is not None
+        assert result["session_id"] == "same-session:subagents"
+
 
 class TestDiscoverSubagentProjects:
+    def test_discover_counts_attached_subagent_sessions(self, tmp_path, monkeypatch):
+        disable_other_providers(monkeypatch, tmp_path, keep={"claude"})
+        projects_dir = tmp_path / "projects"
+        project_dir = projects_dir / "-Users-alice-Documents-research"
+        project_dir.mkdir(parents=True)
+        (project_dir / "same-session.jsonl").write_text(
+            json.dumps(
+                make_subagent_entry("user", "Root msg", "2026-01-01T00:00:00Z", cwd="/tmp", session_id="same-session")
+            )
+            + "\n"
+            + json.dumps(make_subagent_entry("assistant", "Root reply", "2026-01-01T00:00:01Z"))
+            + "\n"
+        )
+
+        subagent_dir = project_dir / "same-session" / "subagents"
+        subagent_dir.mkdir(parents=True)
+        (subagent_dir / "agent-a.jsonl").write_text(
+            json.dumps(
+                make_subagent_entry("user", "SA msg", "2026-01-02T00:00:00Z", cwd="/tmp", session_id="same-session")
+            )
+            + "\n"
+            + json.dumps(make_subagent_entry("assistant", "SA reply", "2026-01-02T00:00:01Z"))
+            + "\n"
+        )
+
+        monkeypatch.setattr("dataclaw.parsers.claude.PROJECTS_DIR", projects_dir)
+        projects = discover_projects()
+        assert len(projects) == 1
+        assert projects[0]["session_count"] == 2
+
     def test_discover_includes_subagent_sessions(self, tmp_path, monkeypatch):
         disable_other_providers(monkeypatch, tmp_path, keep={"claude"})
         projects_dir = tmp_path / "projects"
@@ -532,6 +600,39 @@ class TestDiscoverSubagentProjects:
         monkeypatch.setattr("dataclaw.parsers.claude.PROJECTS_DIR", projects_dir)
         sessions = parse_project_sessions("mixed-project", mock_anonymizer)
         assert len(sessions) == 2
+        contents = {session["messages"][0]["content"] for session in sessions}
+        assert "Root msg" in contents
+        assert "SA msg" in contents
+
+    def test_parse_includes_attached_subagent_sessions(self, tmp_path, monkeypatch, mock_anonymizer):
+        disable_other_providers(monkeypatch, tmp_path, keep={"claude"})
+        projects_dir = tmp_path / "projects"
+        project_dir = projects_dir / "attached-project"
+        project_dir.mkdir(parents=True)
+        (project_dir / "same-session.jsonl").write_text(
+            json.dumps(
+                make_subagent_entry("user", "Root msg", "2026-01-01T00:00:00Z", cwd="/tmp", session_id="same-session")
+            )
+            + "\n"
+            + json.dumps(make_subagent_entry("assistant", "Root reply", "2026-01-01T00:00:01Z"))
+            + "\n"
+        )
+
+        subagent_dir = project_dir / "same-session" / "subagents"
+        subagent_dir.mkdir(parents=True)
+        (subagent_dir / "agent-a.jsonl").write_text(
+            json.dumps(
+                make_subagent_entry("user", "SA msg", "2026-01-02T00:00:00Z", cwd="/tmp", session_id="same-session")
+            )
+            + "\n"
+            + json.dumps(make_subagent_entry("assistant", "SA reply", "2026-01-02T00:00:01Z"))
+            + "\n"
+        )
+
+        monkeypatch.setattr("dataclaw.parsers.claude.PROJECTS_DIR", projects_dir)
+        sessions = parse_project_sessions("attached-project", mock_anonymizer)
+        assert len(sessions) == 2
+        assert {session["session_id"] for session in sessions} == {"same-session", "same-session:subagents"}
         contents = {session["messages"][0]["content"] for session in sessions}
         assert "Root msg" in contents
         assert "SA msg" in contents
@@ -609,6 +710,284 @@ class TestBuildToolResultMap:
         ]
         result = build_tool_result_map(entries, mock_anonymizer)
         assert result["tu-4"]["output"] == {}
+
+    def test_structured_tool_result_keeps_extra_fields_without_dup_text(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-structured",
+                            "content": "command output",
+                            "is_error": False,
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "stdout": "command output",
+                    "stderr": "warning text",
+                    "interrupted": False,
+                    "isImage": False,
+                    "noOutputExpected": False,
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-structured"]["output"]
+        assert output["text"] == "command output"
+        assert "stdout" not in output["raw"]
+        assert output["raw"]["stderr"] == "warning text"
+        assert output["raw"]["interrupted"] is False
+        assert output["raw"]["isImage"] is False
+
+    def test_file_tool_result_omits_duplicate_file_content(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-file",
+                            "content": "line one\nline two",
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "type": "text",
+                    "file": {
+                        "filePath": "/Users/testuser/Documents/myproject/out.txt",
+                        "content": "line one\nline two",
+                        "numLines": 2,
+                        "startLine": 1,
+                        "totalLines": 2,
+                    },
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        raw = result["tu-file"]["output"]["raw"]
+        assert raw["type"] == "text"
+        assert raw["file"]["numLines"] == 2
+        assert "content" not in raw["file"]
+        assert "testuser" not in raw["file"]["filePath"]
+
+    def test_file_tool_result_omits_duplicate_content_with_line_prefixes(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-file-numbered",
+                            "content": "     1→line one\n     2→line two",
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "type": "text",
+                    "file": {
+                        "filePath": "/Users/testuser/Documents/myproject/out.txt",
+                        "content": "line one\nline two",
+                        "numLines": 2,
+                    },
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        raw = result["tu-file-numbered"]["output"]["raw"]
+        assert raw["type"] == "text"
+        assert "content" not in raw["file"]
+
+    def test_file_tool_result_omits_duplicate_content_when_output_wraps_it(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-file-wrapped",
+                            "content": (
+                                "     1→line one\n     2→line two\n\n<system-reminder>extra wrapper</system-reminder>"
+                            ),
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "type": "text",
+                    "file": {
+                        "filePath": "/Users/testuser/Documents/myproject/out.txt",
+                        "content": "line one\nline two",
+                        "numLines": 2,
+                    },
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        raw = result["tu-file-wrapped"]["output"]["raw"]
+        assert raw["type"] == "text"
+        assert "content" not in raw["file"]
+
+    def test_non_text_tool_result_blocks_preserved(self, mock_anonymizer):
+        image_data = "A" * 5000
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-image",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {"type": "base64", "data": image_data},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-image"]["output"]
+        assert "text" not in output
+        assert output["raw"]["content"][0]["type"] == "image"
+        assert output["raw"]["content"][0]["source"]["data"] == image_data
+
+    def test_large_string_blob_content_preserved_verbatim_in_raw(self, mock_anonymizer):
+        blob = "A" * 5000
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-blob",
+                            "content": blob,
+                        }
+                    ]
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-blob"]["output"]
+        assert "text" not in output
+        assert output["raw"]["content"] == blob
+
+    def test_large_string_tool_use_result_preserved_verbatim_in_raw(self, mock_anonymizer):
+        blob = "A" * 5000
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-blob-result",
+                            "content": blob,
+                        }
+                    ]
+                },
+                "toolUseResult": blob,
+                "sourceToolAssistantUUID": "assistant-blob",
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-blob-result"]["output"]
+        assert "text" not in output
+        assert output["raw"]["content"] == blob
+        assert output["raw"]["sourceToolAssistantUUID"] == "assistant-blob"
+
+    def test_long_ansi_terminal_output_is_preserved_as_text(self, mock_anonymizer):
+        terminal_output = (
+            "Exit code 1\n"
+            + "\x1b[92mSuccessfully preprocessed all matching files.\x1b[0m\n"
+            + ("Traceback line with context\n" * 250)
+        )
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-ansi",
+                            "content": terminal_output,
+                            "is_error": True,
+                        }
+                    ]
+                },
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-ansi"]["output"]
+        assert output["text"].startswith("Exit code 1")
+        assert "Successfully preprocessed" in output["text"]
+
+    def test_edit_tool_result_preserves_raw_payload(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-edit",
+                            "content": "The file was updated successfully.",
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "filePath": "/Users/testuser/Documents/myproject/app.py",
+                    "oldString": "secret = 'abc'",
+                    "newString": "secret = 'xyz'",
+                    "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1}],
+                },
+                "sourceToolAssistantUUID": "assistant-123",
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        raw = result["tu-edit"]["output"]["raw"]
+        assert raw["filePath"] != "/Users/testuser/Documents/myproject/app.py"
+        assert "oldString" not in raw
+        assert "newString" not in raw
+        assert "structuredPatch" not in raw
+        assert raw["sourceToolAssistantUUID"] == "assistant-123"
+
+    def test_create_tool_result_drops_duplicate_created_file_content(self, mock_anonymizer):
+        entries = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu-create",
+                            "content": "File created successfully at: /Users/testuser/Documents/myproject/out.txt",
+                        }
+                    ]
+                },
+                "toolUseResult": {
+                    "type": "create",
+                    "filePath": "/Users/testuser/Documents/myproject/out.txt",
+                    "content": "full file contents",
+                },
+                "sourceToolAssistantUUID": "assistant-create",
+            }
+        ]
+        result = build_tool_result_map(entries, mock_anonymizer)
+        output = result["tu-create"]["output"]
+        assert output["text"].startswith("File created successfully at:")
+        assert output["raw"]["type"] == "create"
+        assert output["raw"]["filePath"] != "/Users/testuser/Documents/myproject/out.txt"
+        assert "content" not in output["raw"]
+        assert output["raw"]["sourceToolAssistantUUID"] == "assistant-create"
 
     def test_non_user_entries_ignored(self, mock_anonymizer):
         entries = [
