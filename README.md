@@ -105,18 +105,18 @@ dataclaw export --publish-attestation "User explicitly approved publishing to Hu
 |---------|-------------|
 | `dataclaw status` | Show current stage and next steps (JSON) |
 | `dataclaw prep` | Discover projects, check HF auth, output JSON |
-| `dataclaw prep --source <source|all>` | Prep with an explicit source scope |
+| `dataclaw prep --source <source\|all>` | Prep with an explicit source scope |
 | `dataclaw list` | List all projects with exclusion status |
-| `dataclaw list --source <source|all>` | List projects for a specific source scope |
+| `dataclaw list --source <source\|all>` | List projects for a specific source scope |
 | `dataclaw config` | Show current config |
 | `dataclaw config --repo user/my-personal-codex-data` | Set HF repo |
-| `dataclaw config --source <source|all>` | REQUIRED source scope selection (examples include `claude`, `codex`, and others) |
+| `dataclaw config --source <source\|all>` | REQUIRED source scope selection (examples include `claude`, `codex`, and others) |
 | `dataclaw config --exclude "a,b"` | Add excluded projects (appends) |
 | `dataclaw config --redact "str1,str2"` | Add strings to always redact (appends) |
 | `dataclaw config --redact-usernames "u1,u2"` | Add usernames to anonymize (appends) |
 | `dataclaw config --confirm-projects` | Mark project selection as confirmed |
 | `dataclaw export --no-push` | Export locally only (always do this first) |
-| `dataclaw export --source <source|all> --no-push` | Export a chosen source scope locally |
+| `dataclaw export --source <source\|all> --no-push` | Export a chosen source scope locally |
 | `dataclaw confirm --full-name "NAME" --attest-full-name "..." --attest-sensitive "..." --attest-manual-scan "..."` | Scan for PII, run exact-name privacy check, verify review attestations, unlock pushing |
 | `dataclaw confirm --skip-full-name-scan --attest-full-name "..." --attest-sensitive "..." --attest-manual-scan "..."` | Skip exact-name scan when user declines sharing full name (requires skip attestation) |
 | `dataclaw export --publish-attestation "..."` | Export and push (requires `dataclaw confirm` first) |
