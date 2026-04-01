@@ -1,10 +1,10 @@
 """Tests for dataclaw.parser — JSONL parsing and project discovery."""
 
-import json
 import sqlite3
 
 import pytest
 
+from dataclaw import _json as json
 from dataclaw.parser import (
     _build_project_name,
     _build_tool_result_map,
@@ -1246,7 +1246,7 @@ class TestBuildCodexToolResultMap:
         assert "hello world" in result["call-1"]["output"]["output"]
 
     def test_custom_tool_call_output(self, mock_anonymizer):
-        import json as _json
+        from dataclaw import _json as _json
         entries = [
             {
                 "type": "response_item",
@@ -1282,7 +1282,7 @@ class TestBuildCodexToolResultMap:
 
     def test_output_attached_end_to_end(self, tmp_path, monkeypatch, mock_anonymizer):
         """Codex tool output is attached to the tool_use in the parsed session."""
-        import json as _json
+        from dataclaw import _json as _json
         monkeypatch.setattr("dataclaw.parser.PROJECTS_DIR", tmp_path / "no-claude")
         monkeypatch.setattr("dataclaw.parser._CODEX_PROJECT_INDEX", {})
 

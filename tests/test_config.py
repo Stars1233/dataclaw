@@ -1,9 +1,8 @@
 """Tests for dataclaw.config — config persistence."""
 
-import json
-
 import pytest
 
+from dataclaw import _json as json
 from dataclaw.config import load_config, save_config
 
 

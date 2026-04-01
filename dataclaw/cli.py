@@ -1,7 +1,6 @@
 """CLI for DataClaw — export coding agent conversations to Hugging Face."""
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -12,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
 
+from . import _json as json
 from .anonymizer import Anonymizer
 from .config import CONFIG_FILE, DataClawConfig, load_config, save_config
 from .parser import CLAUDE_DIR, CODEX_DIR, CURSOR_DB, CUSTOM_DIR, GEMINI_DIR, KIMI_DIR, OPENCODE_DIR, OPENCLAW_DIR, discover_projects, parse_project_sessions
@@ -366,7 +366,7 @@ def export_to_jsonl(
     project_names = []
 
     try:
-        fh = open(output_path, "w")
+        fh = open(output_path, "wb")
     except OSError as e:
         print(f"Error: cannot write to {output_path}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -389,7 +389,8 @@ def export_to_jsonl(
                 session, n_redacted = redact_session(session, custom_strings=custom_strings)
                 total_redactions += n_redacted
 
-                f.write(json.dumps(session, ensure_ascii=False) + "\n")
+                f.write(json.dumps_bytes(session))
+                f.write(b"\n")
                 total += 1
                 proj_count += 1
                 models[model] = models.get(model, 0) + 1
@@ -442,7 +443,7 @@ def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict) -> None:
         )
 
         api.upload_file(
-            path_or_fileobj=json.dumps(meta, indent=2).encode(),
+            path_or_fileobj=json.dumps_bytes(meta, indent=2),
             path_in_repo="metadata.json",
             repo_id=repo_id, repo_type="dataset",
             commit_message="Update metadata",

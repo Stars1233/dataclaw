@@ -1,11 +1,11 @@
 """Tests for dataclaw.cli — CLI commands and helpers."""
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from dataclaw import _json as json
 from dataclaw.cli import (
     _build_status_next_steps,
     _build_dataset_card,

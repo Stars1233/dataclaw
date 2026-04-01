@@ -1,9 +1,9 @@
-import json
 import platform
 import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .. import _json as json
 from ..anonymizer import Anonymizer
 from ..secrets import redact_text
 
