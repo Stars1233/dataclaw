@@ -163,9 +163,10 @@ def parse_session(
                 parts = [load_json_field(part_row["data"]) for part_row in part_rows]
 
                 if role == "user":
-                    content = extract_user_content(parts, anonymizer)
-                    if content is not None:
-                        messages.append({"role": "user", "content": content, "timestamp": timestamp})
+                    msg = extract_user_message(parts, anonymizer)
+                    if msg is not None:
+                        msg["timestamp"] = timestamp
+                        messages.append(msg)
                         stats["user_messages"] += 1
                         update_time_bounds(metadata, timestamp)
                 elif role == "assistant":
@@ -207,20 +208,68 @@ def extract_model(message_data: dict[str, Any]) -> str | None:
     return None
 
 
-def extract_user_content(parts: list[dict[str, Any]], anonymizer: Anonymizer) -> str | None:
+def build_opencode_file_source(url: Any, mime: Any, anonymizer: Anonymizer) -> dict[str, Any] | None:
+    if not isinstance(url, str) or not url:
+        return None
+
+    if url.startswith("data:") and ";base64," in url:
+        header, data = url.split(",", 1)
+        media_type = mime if isinstance(mime, str) and mime else header[5:].split(";", 1)[0]
+        return {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
+
+    if url.startswith("file://"):
+        source: dict[str, Any] = {
+            "type": "url",
+            "url": f"file://{anonymizer.path(url[7:])}",
+        }
+    else:
+        source = {"type": "url", "url": anonymizer.text(url)}
+
+    if isinstance(mime, str) and mime:
+        source["media_type"] = mime
+    return source
+
+
+def extract_opencode_file_part(part: dict[str, Any], anonymizer: Anonymizer) -> dict[str, Any] | None:
+    source = build_opencode_file_source(part.get("url"), part.get("mime"), anonymizer)
+    if source is None:
+        return None
+
+    mime = part.get("mime")
+    if isinstance(mime, str) and mime.startswith("image/"):
+        return {"type": "image", "source": source}
+    return {"type": "document", "source": source}
+
+
+def extract_user_message(parts: list[dict[str, Any]], anonymizer: Anonymizer) -> dict[str, Any] | None:
     text_parts: list[str] = []
+    content_parts: list[dict[str, Any]] = []
     for part in parts:
         if not isinstance(part, dict):
             continue
-        if part.get("type") != "text":
-            continue
-        text = part.get("text")
-        if isinstance(text, str) and text.strip():
-            text_parts.append(anonymizer.text(text.strip()))
+        part_type = part.get("type")
+        if part_type == "text":
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(anonymizer.text(text.strip()))
+        elif part_type == "file":
+            content_part = extract_opencode_file_part(part, anonymizer)
+            if content_part is not None:
+                content_parts.append(content_part)
 
-    if not text_parts:
+    if not text_parts and not content_parts:
         return None
-    return "\n\n".join(text_parts)
+
+    message: dict[str, Any] = {"role": "user"}
+    if text_parts:
+        message["content"] = "\n\n".join(text_parts)
+    if content_parts:
+        message["content_parts"] = content_parts
+    return message
 
 
 def extract_assistant_content(
