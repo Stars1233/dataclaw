@@ -245,6 +245,21 @@ The auto-generated HF README includes:
 - Project count
 - Last updated timestamp
 
+## Contributing
+
+**Missing data:** If you found any data not exported, please report an issue. You can ask your coding agent to analyze the data, export it in this repo, and open a PR.
+
+**Better scheme:** If you need to clean the data and want to propose a better scheme, feel free to open an issue.
+
+**New provider:** If you use a new coding agent, you can ask it to read this repo and export its data as a new provider. Take Claude Code and Codex parsers as examples because they are the most well maintained. When you finish, ask the following question:
+- Did you follow the scheme above? Currently it's free to add custom fields in `messages[].content_parts` and `tool_uses[].output.raw`.
+- Did you export all data, especially:
+  - tool call inputs and outputs
+  - long inputs and outputs that may be saved somewhere else
+  - binary content (may be encoded as base64) such as images. We do not apply anonymizer on binary content
+  - subagents
+- Does the coding agent automatically delete old sessions? How to prevent this?
+
 ## Code Quality
 
 <p align="center">
