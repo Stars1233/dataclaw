@@ -68,10 +68,7 @@ IMPORTANT: Never run bare `hf auth login` when automating this with an agent - a
 IMPORTANT: Always export with --no-push first and review for PII before publishing.
 ```
 
-<details>
-<summary><b>Manual usage (without an agent)</b></summary>
-
-### Quick start
+## Manual usage (without an agent)
 
 ```bash
 # STEP 1 - INSTALL
@@ -141,10 +138,7 @@ Step 2 (INSTALL SKILL) is omitted in manual usage.
 | `dataclaw export --no-thinking` | Exclude extended thinking blocks |
 | `dataclaw update-skill claude` | Install/update the dataclaw skill for Claude Code |
 
-</details>
-
-<details>
-<summary><b>What gets exported</b></summary>
+## What gets exported
 
 | Data | Included | Notes |
 |------|----------|-------|
@@ -176,10 +170,7 @@ then use tools such as [trufflehog](https://github.com/trufflesecurity/truffleho
 
 To help improve redaction, report issues: https://github.com/banodoco/dataclaw/issues
 
-</details>
-
-<details>
-<summary><b>Data schema</b></summary>
+### Data schema
 
 Each line in `conversations.jsonl` is one session:
 
@@ -231,10 +222,7 @@ Each line in `conversations.jsonl` is one session:
 
 Each HF repo also includes a `metadata.json` with aggregate stats.
 
-</details>
-
-<details>
-<summary><b>Finding datasets on Hugging Face</b></summary>
+## Finding datasets on Hugging Face
 
 All repos are tagged `dataclaw`.
 
@@ -256,8 +244,6 @@ The auto-generated HF README includes:
 - Total token counts
 - Project count
 - Last updated timestamp
-
-</details>
 
 ## Code Quality
 
