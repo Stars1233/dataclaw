@@ -117,6 +117,8 @@ class CodexParseState:
     max_input_tokens: int = 0
     max_output_tokens: int = 0
     tool_result_map: dict[str, dict] = dataclasses.field(default_factory=dict)
+    pending_user_content_parts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    pending_user_timestamp: str | None = None
 
 
 def build_tool_result_map(entries: list[dict[str, Any]], anonymizer: Anonymizer) -> dict[str, dict]:
@@ -203,6 +205,8 @@ def parse_session_file(
     last_timestamp: str | None = None
     for entry in entries:
         timestamp = normalize_timestamp(entry.get("timestamp"))
+        if state.pending_user_content_parts and not _is_user_content_entry(entry):
+            _flush_pending_user_message(state, state.pending_user_timestamp or last_timestamp or timestamp)
         last_timestamp = timestamp
         entry_type = entry.get("type")
 
@@ -235,6 +239,7 @@ def parse_session_file(
     if state.raw_cwd != target_cwd:
         return None
 
+    _flush_pending_user_message(state, state.pending_user_timestamp or state.metadata["end_time"] or last_timestamp)
     flush_pending(state, timestamp=state.metadata["end_time"] or last_timestamp)
 
     if state.metadata["model"] is None:
@@ -285,6 +290,116 @@ def handle_turn_context(
             state.metadata["model"] = model_name
 
 
+def _build_codex_image_part(image_url: str, anonymizer: Anonymizer) -> dict[str, Any] | None:
+    if not image_url:
+        return None
+
+    if image_url.startswith("data:") and ";base64," in image_url:
+        header, data = image_url.split(",", 1)
+        media_type = header[5:].split(";", 1)[0]
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+
+    if image_url.startswith("file://"):
+        return {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": f"file://{anonymizer.path(image_url[7:])}",
+            },
+        }
+
+    return {
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": anonymizer.text(image_url),
+        },
+    }
+
+
+def _build_codex_local_image_part(image_path: str, state: CodexParseState, anonymizer: Anonymizer) -> dict[str, Any]:
+    path = Path(image_path)
+    if not path.is_absolute() and state.raw_cwd != UNKNOWN_CODEX_CWD:
+        path = Path(state.raw_cwd) / path
+    return {
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": f"file://{anonymizer.path(str(path))}",
+        },
+    }
+
+
+def _extract_response_user_content_parts(payload: dict[str, Any], anonymizer: Anonymizer) -> list[dict[str, Any]]:
+    content_parts: list[dict[str, Any]] = []
+    for part in payload.get("content", []):
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") != "input_image":
+            continue
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url:
+            image_part = _build_codex_image_part(image_url, anonymizer)
+            if image_part is not None:
+                content_parts.append(image_part)
+    return content_parts
+
+
+def _extract_event_user_content_parts(
+    payload: dict[str, Any],
+    state: CodexParseState,
+    anonymizer: Anonymizer,
+) -> list[dict[str, Any]]:
+    content_parts: list[dict[str, Any]] = []
+    for image_url in payload.get("images", []):
+        if isinstance(image_url, str) and image_url:
+            image_part = _build_codex_image_part(image_url, anonymizer)
+            if image_part is not None:
+                content_parts.append(image_part)
+    for image_path in payload.get("local_images", []):
+        if isinstance(image_path, str) and image_path:
+            content_parts.append(_build_codex_local_image_part(image_path, state, anonymizer))
+    return content_parts
+
+
+def _clear_pending_user_content(state: CodexParseState) -> None:
+    state.pending_user_content_parts.clear()
+    state.pending_user_timestamp = None
+
+
+def _flush_pending_user_message(state: CodexParseState, timestamp: str | None) -> None:
+    if not state.pending_user_content_parts:
+        return
+
+    effective_timestamp = state.pending_user_timestamp or timestamp
+    state.messages.append(
+        {
+            "role": "user",
+            "content_parts": list(state.pending_user_content_parts),
+            "timestamp": effective_timestamp,
+        }
+    )
+    state.stats["user_messages"] += 1
+    update_time_bounds(state.metadata, effective_timestamp)
+    _clear_pending_user_content(state)
+
+
+def _is_user_content_entry(entry: dict[str, Any]) -> bool:
+    if entry.get("type") == "event_msg":
+        return entry.get("payload", {}).get("type") == "user_message"
+    if entry.get("type") == "response_item":
+        payload = entry.get("payload", {})
+        return payload.get("type") == "message" and payload.get("role") == "user"
+    return False
+
+
 def handle_response_item(
     state: CodexParseState,
     entry: dict[str, Any],
@@ -293,6 +408,13 @@ def handle_response_item(
 ) -> None:
     payload = entry.get("payload", {})
     item_type = payload.get("type")
+    if item_type == "message" and payload.get("role") == "user":
+        content_parts = _extract_response_user_content_parts(payload, anonymizer)
+        if content_parts:
+            state.pending_user_content_parts.extend(content_parts)
+            if state.pending_user_timestamp is None:
+                state.pending_user_timestamp = normalize_timestamp(entry.get("timestamp"))
+        return
     if item_type == "function_call":
         tool_name = payload.get("name")
         args_data = parse_tool_arguments(payload.get("arguments"))
@@ -348,17 +470,23 @@ def handle_user_message(
     anonymizer: Anonymizer,
 ) -> None:
     flush_pending(state, timestamp)
+    pending_parts = list(state.pending_user_content_parts)
     content = payload.get("message")
+    if not pending_parts:
+        pending_parts.extend(_extract_event_user_content_parts(payload, state, anonymizer))
+
+    msg: dict[str, Any] = {"role": "user", "timestamp": timestamp}
     if isinstance(content, str) and content.strip():
-        state.messages.append(
-            {
-                "role": "user",
-                "content": anonymizer.text(content.strip()),
-                "timestamp": timestamp,
-            }
-        )
+        msg["content"] = anonymizer.text(content.strip())
+    if pending_parts:
+        msg["content_parts"] = pending_parts
+
+    if len(msg) > 2 or (len(msg) == 2 and "content" in msg):
+        state.messages.append(msg)
         state.stats["user_messages"] += 1
         update_time_bounds(state.metadata, timestamp)
+
+    _clear_pending_user_content(state)
 
 
 def resolve_tool_uses(state: CodexParseState) -> list[dict]:

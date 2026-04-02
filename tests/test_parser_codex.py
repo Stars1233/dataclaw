@@ -198,6 +198,211 @@ class TestDiscoverCodexProjects:
         ]
         assert paragraphs == ["Planning fix", "Reading code"]
 
+    def test_codex_user_image_input_preserved_in_content_parts(self, tmp_path, monkeypatch, mock_anonymizer):
+        disable_other_providers(monkeypatch, tmp_path, keep={"codex"})
+        codex_sessions = tmp_path / "codex-sessions" / "2026" / "04" / "02"
+        codex_sessions.mkdir(parents=True)
+        session_file = codex_sessions / "rollout-image.jsonl"
+        lines = [
+            {
+                "timestamp": "2026-04-02T00:26:54.204Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-image",
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.207Z",
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model": "gpt-5.4",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.336Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "<image name=[Image #1]>"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,QUJDRA=="},
+                    ],
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.339Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "Can you read the image [Image #1] ?",
+                    "images": [],
+                    "local_images": ["tmp/image.png"],
+                    "text_elements": [{"placeholder": "[Image #1]"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:27:08.731Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Yes."},
+            },
+        ]
+        session_file.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
+
+        result = parse_session_file(
+            session_file,
+            mock_anonymizer,
+            include_thinking=True,
+            target_cwd="/Users/testuser/Documents/myrepo",
+        )
+
+        assert result is not None
+        user_message = result["messages"][0]
+        assert user_message["role"] == "user"
+        assert user_message["content"] == "Can you read the image [Image #1] ?"
+        assert user_message["content_parts"] == [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "QUJDRA==",
+                },
+            }
+        ]
+
+    def test_codex_user_local_image_fallback(self, tmp_path, monkeypatch, mock_anonymizer):
+        disable_other_providers(monkeypatch, tmp_path, keep={"codex"})
+        codex_sessions = tmp_path / "codex-sessions" / "2026" / "04" / "02"
+        codex_sessions.mkdir(parents=True)
+        session_file = codex_sessions / "rollout-local-image.jsonl"
+        lines = [
+            {
+                "timestamp": "2026-04-02T00:26:54.204Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-local-image",
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.207Z",
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model": "gpt-5.4",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.339Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "Please inspect this image.",
+                    "images": [],
+                    "local_images": ["tmp/image.png"],
+                    "text_elements": [],
+                },
+            },
+        ]
+        session_file.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
+
+        result = parse_session_file(
+            session_file,
+            mock_anonymizer,
+            include_thinking=True,
+            target_cwd="/Users/testuser/Documents/myrepo",
+        )
+
+        assert result is not None
+        user_message = result["messages"][0]
+        assert user_message["content"] == "Please inspect this image."
+        assert user_message["content_parts"][0]["type"] == "image"
+        assert user_message["content_parts"][0]["source"]["type"] == "url"
+        assert "testuser" not in user_message["content_parts"][0]["source"]["url"]
+        assert (
+            user_message["content_parts"][0]["source"]["url"]
+            .replace("\\", "/")
+            .endswith("/Documents/myrepo/tmp/image.png")
+        )
+
+    def test_codex_image_only_response_item_flushes_user_message(self, tmp_path, monkeypatch, mock_anonymizer):
+        disable_other_providers(monkeypatch, tmp_path, keep={"codex"})
+        codex_sessions = tmp_path / "codex-sessions" / "2026" / "04" / "02"
+        codex_sessions.mkdir(parents=True)
+        session_file = codex_sessions / "rollout-image-only.jsonl"
+        lines = [
+            {
+                "timestamp": "2026-04-02T00:26:54.204Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-image-only",
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.207Z",
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/Users/testuser/Documents/myrepo",
+                    "model": "gpt-5.4",
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:26:54.336Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/png;base64," + ("A" * 5000)},
+                    ],
+                },
+            },
+            {
+                "timestamp": "2026-04-02T00:27:08.731Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Yes."},
+            },
+        ]
+        session_file.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_SESSIONS_DIR", tmp_path / "codex-sessions")
+        monkeypatch.setattr("dataclaw.parsers.codex.CODEX_ARCHIVED_DIR", tmp_path / "codex-archived")
+
+        result = parse_session_file(
+            session_file,
+            mock_anonymizer,
+            include_thinking=True,
+            target_cwd="/Users/testuser/Documents/myrepo",
+        )
+
+        assert result is not None
+        user_message = result["messages"][0]
+        assert user_message["role"] == "user"
+        assert "content" not in user_message
+        assert user_message["content_parts"] == [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "A" * 5000,
+                },
+            }
+        ]
+
 
 class TestBuildCodexToolResultMap:
     def test_function_call_output(self, mock_anonymizer):
