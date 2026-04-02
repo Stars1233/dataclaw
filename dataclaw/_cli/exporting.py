@@ -28,7 +28,10 @@ def _normalize_model_stats_key(key: object) -> str | None:
     if not key:
         return None
 
-    return key.rsplit("/", 1)[-1]
+    key = key.rsplit("/", 1)[-1]
+    key = key.replace("_", "-")
+    key = key.replace(".", "-")
+    return key
 
 
 def _normalize_project_stats_key(key: object) -> str | None:
@@ -43,6 +46,8 @@ def _normalize_project_stats_key(key: object) -> str | None:
         key = key.split(":", 1)[1]
 
     key = key.lower()
+    key = key.replace("_", "-")
+    key = key.replace(".", "-")
     return key or None
 
 

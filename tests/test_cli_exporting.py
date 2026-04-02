@@ -111,7 +111,7 @@ class TestBuildDatasetCard:
 
         card = _build_dataset_card("user/repo", meta)
 
-        assert "| gpt-5.4 | 3 | 30 | 10 |" in card
+        assert "| gpt-5-4 | 3 | 30 | 10 |" in card
         assert "openai/gpt-5.4" not in card
         assert "| comfyui | 3 | 30 | 11 |" in card
         assert "codex:ComfyUI" not in card
@@ -183,7 +183,7 @@ class TestExportToJsonl:
         lines = output.read_text().strip().split("\n")
         assert '"model":"openai/gpt-5.4"' in lines[0]
         assert '"project":"codex:ComfyUI"' in lines[0]
-        assert meta["model_breakdown"] == {"gpt-5.4": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
+        assert meta["model_breakdown"] == {"gpt-5-4": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
         assert meta["project_breakdown"] == {"comfyui": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
 
     def test_skips_synthetic_model(self, tmp_path, mock_anonymizer):
@@ -396,5 +396,5 @@ class TestSummarizeExportJsonl:
 
         meta = summarize_export_jsonl(jsonl_path)
 
-        assert meta["model_breakdown"] == {"gpt-5.4": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
+        assert meta["model_breakdown"] == {"gpt-5-4": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
         assert meta["project_breakdown"] == {"comfyui": {"sessions": 2, "input_tokens": 30, "output_tokens": 10}}
