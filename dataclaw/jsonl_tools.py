@@ -96,9 +96,13 @@ def default_diff_output_path(new_path: Path) -> Path:
     return new_path.with_name(f"{new_path.stem}{DEFAULT_DIFF_SUFFIX}")
 
 
+def _open_text_output(path: Path):
+    return path.open("w", encoding="utf-8", newline="\n")
+
+
 def yaml_dump_documents(documents: Iterable[dict[str, Any]], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
+    with _open_text_output(output_path) as handle:
         decoded_handle = DecodeStream(handle)
         for document in documents:
             _yaml_dump_document(document, handle, decoded_handle)
@@ -537,7 +541,7 @@ def diff_jsonl_files(
 
     with tempfile.TemporaryDirectory(prefix="jsonl-diff-events-") as temp_dir:
         events_path = Path(temp_dir) / "events.yaml"
-        with events_path.open("w", encoding="utf-8") as events_handle:
+        with _open_text_output(events_path) as events_handle:
             events_decoded_handle = DecodeStream(events_handle)
             event_count, event_summary = build_events(
                 old_index,
@@ -563,7 +567,7 @@ def diff_jsonl_files(
         }
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as output_handle:
+        with _open_text_output(output_path) as output_handle:
             output_decoded_handle = DecodeStream(output_handle)
             _yaml_dump_document(header, output_handle, output_decoded_handle)
             with events_path.open(encoding="utf-8") as events_handle:

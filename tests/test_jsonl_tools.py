@@ -20,6 +20,16 @@ class TestJsonlToYamlFile:
         assert "line 1" in content
         assert "line 2" in content
 
+    def test_writes_lf_line_endings(self, tmp_path):
+        input_path = tmp_path / "conversations.jsonl"
+        input_path.write_text('{"text":"line 1\\nline 2"}\n', encoding="utf-8")
+
+        output_path = jsonl_tools.jsonl_to_yaml_file(input_path)
+
+        raw = output_path.read_bytes()
+        assert b"\r\n" not in raw
+        assert b"\n" in raw
+
 
 class TestSimplifyPatchOps:
     def test_matches_remove_add_message_runs_and_diffs_inside(self, monkeypatch):
@@ -84,6 +94,31 @@ class TestDiffJsonlFiles:
         docs = list(yaml.safe_load_all(output_path.read_text(encoding="utf-8")))
         assert docs[0]["summary"]["modified_records"] == 1
         assert docs[1]["patch"][0]["path"] == "/messages/0/tool_uses/0/output/raw"
+
+    def test_diff_output_uses_lf_line_endings(self, tmp_path, monkeypatch):
+        old_path = tmp_path / "old.jsonl"
+        new_path = tmp_path / "new.jsonl"
+        output_path = tmp_path / "diff.yaml"
+
+        old_path.write_text(
+            '{"source":"claude","project":"proj","session_id":"s1","start_time":"2026-01-01T00:00:00Z","messages":[{"role":"assistant","timestamp":"2026-01-01T00:00:00Z","content":"old"}]}\n',
+            encoding="utf-8",
+        )
+        new_path.write_text(
+            '{"source":"claude","project":"proj","session_id":"s1","start_time":"2026-01-01T00:00:00Z","messages":[{"role":"assistant","timestamp":"2026-01-01T00:00:00Z","content":"new"}]}\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            "dataclaw.jsonl_tools.run_jd_patch",
+            lambda _old, _new: [{"op": "replace", "path": "/messages/0/content", "old": "old", "new": "new"}],
+        )
+
+        jsonl_tools.diff_jsonl_files(old_path, new_path, output_path)
+
+        raw = output_path.read_bytes()
+        assert b"\r\n" not in raw
+        assert b"\n" in raw
 
     def test_skips_jd_for_large_blob_replacements(self, tmp_path, monkeypatch):
         old_path = tmp_path / "old.jsonl"
