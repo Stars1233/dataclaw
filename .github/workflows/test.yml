@@ -70,9 +70,9 @@ jobs:
           )
           PY
       - run: pnpm -C app install --frozen-lockfile
-      - run: pnpm -C app tauri build
+      - run: pnpm -C app tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"active":false}}}'
         env:
-          APPLE_SIGNING_IDENTITY: ""
+          APPLE_SIGNING_IDENTITY: "-"
       - run: test -d app/src-tauri/target/release/bundle/macos/DataClaw.app
       - name: Assert sidecar inside app bundle
         run: |

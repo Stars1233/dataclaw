@@ -50,7 +50,7 @@ def test_release_yml_falls_back_to_unsigned_dmg_builds():
     assert "if: steps.signing.outputs.signed == 'true'" in text
     assert "if: steps.signing.outputs.signed != 'true'" in text
     assert 'APPLE_SIGNING_IDENTITY: "-"' in text
-    assert "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}" in text
+    assert '--config \'{"bundle":{"createUpdaterArtifacts":false}' in text
     assert "Skipping latest.json because updater artifacts were not produced." in text
     assert "if [[ -f latest.json ]]; then" in text
 
@@ -66,20 +66,19 @@ def test_release_yml_matrix_has_explicit_targets():
     assert "pnpm -C app tauri build --target ${{ matrix.target }}" in text
 
 
-def test_test_yml_unsigned_uses_empty_apple_signing_identity():
+def test_test_yml_unsigned_uses_ad_hoc_apple_signing_identity():
     text = read(".github/workflows/test.yml")
     assert "os: [macos-14, macos-13]" in text
-    assert "pnpm -C app tauri build" in text
-    assert 'APPLE_SIGNING_IDENTITY: ""' in text
+    assert "pnpm -C app tauri build --bundles app" in text
+    assert '--config \'{"bundle":{"createUpdaterArtifacts":false}' in text
+    assert 'APPLE_SIGNING_IDENTITY: "-"' in text
 
 
 def test_tauri_conf_has_updater_plugin():
     conf = json.loads(read("app/src-tauri/tauri.conf.json"))
     updater = conf["plugins"]["updater"]
     assert updater["active"] is True
-    assert "https://github.com/peteromallet/dataclaw/releases/latest/download/latest.json" in updater[
-        "endpoints"
-    ]
+    assert "https://github.com/peteromallet/dataclaw/releases/latest/download/latest.json" in updater["endpoints"]
     assert updater["pubkey"]
     assert updater["pubkey"] != ""
     assert "${" not in updater["pubkey"]
@@ -102,8 +101,8 @@ def test_app_versions_match_python_package():
 def test_release_yml_uploads_stable_dmg_names():
     text = read(".github/workflows/release.yml")
     assert "DataClaw-macOS-Apple-Silicon.dmg" in text
-    assert "gh release edit \"$TAG\" --notes-file RELEASE_NOTES.md" in text
-    assert "gh release create \"$TAG\" \"${ASSETS[@]}\" --notes-file RELEASE_NOTES.md" in text
+    assert 'gh release edit "$TAG" --notes-file RELEASE_NOTES.md' in text
+    assert 'gh release create "$TAG" "${ASSETS[@]}" --notes-file RELEASE_NOTES.md' in text
 
 
 def test_latest_json_uses_semver_with_tag_download_url():
