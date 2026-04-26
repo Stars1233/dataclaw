@@ -50,7 +50,51 @@ jobs:
 
       - run: pnpm -C app install --frozen-lockfile
 
+      - name: Detect signing mode
+        id: signing
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: /Users/runner/.appstoreconnect/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            APPLE_DEVELOPER_ID_CERT_P12_BASE64 \
+            APPLE_DEVELOPER_ID_CERT_PASSWORD \
+            APPLE_API_KEY_P8_BASE64 \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER \
+            APPLE_TEAM_ID \
+            APPLE_SIGNING_IDENTITY \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Apple signing secrets are not fully configured. Building unsigned DMGs only.\n'
+            printf 'Missing secrets:\n'
+            printf '  - %s\n' "${missing[@]}"
+            printf 'Unsigned DMGs are downloadable, but macOS Gatekeeper will warn and updater metadata will not be published.\n'
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import signing assets and build
+        if: steps.signing.outputs.signed == 'true'
         env:
           APPLE_DEVELOPER_ID_CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
           APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
@@ -99,6 +143,14 @@ jobs:
 
           pnpm -C app tauri build --target ${{ matrix.target }}
 
+      - name: Build unsigned app
+        if: steps.signing.outputs.signed != 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ""
+        run: |
+          set -euo pipefail
+          pnpm -C app tauri build --target ${{ matrix.target }} --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"active":false}}}'
+
       - uses: actions/upload-artifact@v4
         with:
           name: dataclaw-${{ matrix.target }}
@@ -132,6 +184,10 @@ jobs:
           ARM64_SIG="$(find artifacts/dataclaw-aarch64-apple-darwin -name '*.app.tar.gz.sig' -print -quit)"
           X86_TARBALL="$(find artifacts/dataclaw-x86_64-apple-darwin -name '*.app.tar.gz' -print -quit)"
           X86_SIG="$(find artifacts/dataclaw-x86_64-apple-darwin -name '*.app.tar.gz.sig' -print -quit)"
+          if [[ -z "$ARM64_TARBALL" || -z "$ARM64_SIG" || -z "$X86_TARBALL" || -z "$X86_SIG" ]]; then
+            echo "Skipping latest.json because updater artifacts were not produced by unsigned builds."
+            exit 0
+          fi
           export ARM64_TARBALL ARM64_SIG X86_TARBALL X86_SIG
           scripts/build-latest-json.sh > latest.json
 
@@ -152,7 +208,9 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t ASSETS < <(find artifacts -type f \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \) | sort)
-          ASSETS+=(latest.json)
+          if [[ -f latest.json ]]; then
+            ASSETS+=(latest.json)
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file RELEASE_NOTES.md
             gh release upload "$TAG" "${ASSETS[@]}" --clobber

@@ -40,6 +40,18 @@ def test_release_yml_has_required_secrets():
     }
     missing = sorted(secret for secret in required if secret not in text)
     assert missing == []
+    assert "Apple signing secrets are not fully configured. Building unsigned DMGs only." in text
+    assert "Unsigned DMGs are downloadable, but macOS Gatekeeper will warn" in text
+
+
+def test_release_yml_falls_back_to_unsigned_dmg_builds():
+    text = read(".github/workflows/release.yml")
+    assert "id: signing" in text
+    assert "if: steps.signing.outputs.signed == 'true'" in text
+    assert "if: steps.signing.outputs.signed != 'true'" in text
+    assert "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}" in text
+    assert "Skipping latest.json because updater artifacts were not produced by unsigned builds." in text
+    assert "if [[ -f latest.json ]]; then" in text
 
 
 def test_release_yml_matrix_has_explicit_targets():
