@@ -68,7 +68,7 @@ def test_release_yml_matrix_has_explicit_targets():
 
 def test_test_yml_unsigned_uses_ad_hoc_apple_signing_identity():
     text = read(".github/workflows/test.yml")
-    assert "os: [macos-14, macos-13]" in text
+    assert "os: [macos-14]" in text
     assert "pnpm -C app tauri build --bundles app" in text
     assert '--config \'{"bundle":{"createUpdaterArtifacts":false}' in text
     assert 'APPLE_SIGNING_IDENTITY: "-"' in text

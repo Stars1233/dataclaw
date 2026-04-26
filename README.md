@@ -8,19 +8,32 @@ Turn your Claude Code, Codex, and other coding-agent conversation history into s
 
 Every export is tagged **`dataclaw`** on Hugging Face. Together, they may someday form a growing [distributed dataset](https://huggingface.co/datasets?other=dataclaw) of real-world human-AI coding collaboration.
 
-## Install
+## Download for Mac
+
+<p align="center">
+  <a href="https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg">
+    <img alt="Download DataClaw for Apple Silicon Macs" src="https://img.shields.io/badge/Download%20for%20Mac-Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white">
+  </a>
+  <a href="https://github.com/peteromallet/dataclaw/releases/latest">
+    <img alt="View GitHub Releases" src="https://img.shields.io/badge/View%20Releases-GitHub-0969da?style=for-the-badge&logo=github&logoColor=white">
+  </a>
+</p>
+
+DataClaw ships as a Mac menu-bar app for Apple Silicon MacBooks and desktop Macs. Download the DMG, drag `DataClaw.app` to Applications, then launch it from Applications or Spotlight.
+
+The current GitHub DMG is unsigned while Apple Developer ID signing is being set up, so macOS may show a Gatekeeper warning on first launch. The app bundles the DataClaw sidecar, so Mac users do not need to install Python, PyInstaller, or the CLI separately.
+
+## Install Options
 
 ### Mac app
 
-Download the app:
-
-1. [Download DataClaw for Mac](https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg) for Apple Silicon MacBooks and desktop Macs.
+1. [Download DataClaw for Mac](https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg).
 2. Open the DMG and drag `DataClaw.app` to Applications.
 3. Launch DataClaw from Applications or Spotlight.
 
 All release assets are also available on [GitHub Releases](https://github.com/peteromallet/dataclaw/releases/latest). Intel Mac users can use the CLI install for now.
 
-The Mac app bundles the DataClaw sidecar, so users do not need to install Python, PyInstaller, or the CLI separately. Releases are signed, notarized, and configured for in-app updates through GitHub Releases.
+Once Apple signing secrets are configured, releases can be signed, notarized, and configured for in-app updates through GitHub Releases.
 
 ### CLI only
 
