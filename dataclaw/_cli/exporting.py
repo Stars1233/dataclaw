@@ -17,6 +17,7 @@ from typing import Any
 from .. import _json as json
 from .._workers import configured_workers
 from ..anonymizer import Anonymizer
+from ..jsonl_tools import merge_jsonl_union
 from ..parser import iter_project_sessions
 from ..providers import get_provider_non_anon_string_keys
 from ..secrets import transform_session
@@ -648,8 +649,71 @@ def _build_breakdown_table(label: str, breakdown: object) -> str:
     return "\n".join(lines)
 
 
-def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict) -> None:
+REMOTE_CONVERSATIONS_FILE = "conversations.jsonl"
+_MERGE_MAX_ATTEMPTS = 5
+
+
+def _build_carry_forward_redactor(redaction: dict | None):
+    """Build a ``redact_fn(record) -> record`` matching the export-time pipeline.
+
+    Carried-forward remote records are re-redacted through the CURRENT redaction
+    policy (idempotent for already-current records) so old-policy redaction is
+    never republished. The Anonymizer + ``transform_session`` call are constructed
+    exactly the way the export loop builds them (``_export_to_jsonl_serial`` /
+    ``_export_session_task_worker``).
+    """
+    redaction = redaction or {}
+    extra_usernames = list(redaction.get("redact_usernames") or [])
+    custom_strings = list(redaction.get("redact_strings") or [])
+
+    def redact_fn(record: dict) -> dict:
+        # A fresh Anonymizer per record matches the per-worker construction and keeps
+        # pseudonyms deterministic (hash-based), so re-redaction stays idempotent.
+        anonymizer = Anonymizer(extra_usernames=extra_usernames)
+        source = record.get("source") or ""
+        redacted, _ = transform_session(
+            record,
+            anonymizer,
+            custom_strings=custom_strings,
+            non_anon_string_keys=get_provider_non_anon_string_keys(source),
+        )
+        return redacted
+
+    return redact_fn
+
+
+def _download_remote_conversations(api, repo_id: str, dest: Path) -> tuple[Path | None, str | None]:
+    """Download the remote conversations file. Fail closed on anything but 404/no-repo.
+
+    Returns ``(local_path, parent_commit_sha)``. ``local_path`` is ``None`` only when
+    the remote file (or repo) is confirmed absent, which means "empty remote". Any
+    other error (network/auth/HTTP) raises so the push aborts and the remote is never
+    overwritten with a local-only file.
+    """
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+
+    try:
+        parent_commit = api.repo_info(repo_id, repo_type="dataset").sha
+    except RepositoryNotFoundError:
+        return None, None
+
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=REMOTE_CONVERSATIONS_FILE,
+            repo_type="dataset",
+            revision=parent_commit,
+            local_dir=str(dest),
+        )
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        return None, parent_commit
+    return Path(downloaded), parent_commit
+
+
+def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict, redaction: dict | None = None) -> None:
     from huggingface_hub import HfApi
+    from huggingface_hub.utils import HfHubHTTPError
 
     api = HfApi()
 
@@ -663,17 +727,52 @@ def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict) -> None:
         )
 
     print(f"Pushing to: {repo_id}")
+    api.create_repo(repo_id, repo_type="dataset", exist_ok=True)
+
+    redact_fn = _build_carry_forward_redactor(redaction)
+
+    with tempfile.TemporaryDirectory(prefix="dataclaw-merge-") as temp_dir:
+        temp_path = Path(temp_dir)
+        merged_path = temp_path / "merged_conversations.jsonl"
+
+        for attempt in range(1, _MERGE_MAX_ATTEMPTS + 1):
+            try:
+                remote_path, parent_commit = _download_remote_conversations(api, repo_id, temp_path / "remote")
+            except (OSError, ValueError, HfHubHTTPError) as e:
+                # Fail closed: never overwrite the remote with a local-only file.
+                emit_blocked_error(
+                    f"reading remote dataset before merge (push aborted to avoid data loss): {e}"
+                )
+
+            try:
+                merged_total = _merge_or_passthrough(remote_path, jsonl_path, merged_path, redact_fn)
+            except (OSError, ValueError) as e:
+                emit_blocked_error(f"merging remote and local conversations: {e}")
+
+            # Keep metadata/README/shrink-gate consistent with what we actually upload.
+            meta["sessions"] = merged_total
+            upload_target = merged_path if remote_path is not None else jsonl_path
+
+            try:
+                api.upload_file(
+                    path_or_fileobj=str(upload_target),
+                    path_in_repo=REMOTE_CONVERSATIONS_FILE,
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    commit_message="Update conversation data (merged)",
+                    parent_commit=parent_commit,
+                )
+                break
+            except HfHubHTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status == 412 and attempt < _MERGE_MAX_ATTEMPTS:
+                    print(f"  Concurrent update detected (412), re-merging (attempt {attempt + 1})...")
+                    continue
+                emit_blocked_error(f"uploading merged conversations to Hugging Face: {e}")
+            except (OSError, ValueError) as e:
+                emit_blocked_error(f"uploading merged conversations to Hugging Face: {e}")
+
     try:
-        api.create_repo(repo_id, repo_type="dataset", exist_ok=True)
-
-        api.upload_file(
-            path_or_fileobj=str(jsonl_path),
-            path_in_repo="conversations.jsonl",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message="Update conversation data",
-        )
-
         api.upload_file(
             path_or_fileobj=json.dumps_bytes(meta, indent=2),
             path_in_repo="metadata.json",
@@ -689,11 +788,31 @@ def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict) -> None:
             repo_type="dataset",
             commit_message="Update dataset card",
         )
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, HfHubHTTPError) as e:
         emit_blocked_error(f"uploading to Hugging Face: {e}")
 
     print(f"\nDataset: {hf_dataset_url(repo_id)}")
     print(f"Browse all: {hf_browse_tagged_url()}")
+
+
+def _merge_or_passthrough(remote_path: Path | None, local_path: Path, merged_path: Path, redact_fn) -> int:
+    """Merge remote+local (or pass through local when remote is empty); return total."""
+    if remote_path is None:
+        # No prior remote data: the local file is the merged set as-is.
+        with local_path.open("rb") as src:
+            total = sum(1 for line in src if line.strip())
+        print(f"Merge: no prior remote dataset; publishing {total} local sessions")
+        return total
+
+    stats = merge_jsonl_union(remote_path, local_path, merged_path, redact_fn=redact_fn)
+    print(stats.changelog_line())
+    if stats.merged_total < stats.remote_total:
+        # Union invariant violated -> abort rather than risk a remote shrink.
+        emit_blocked_error(
+            f"merge produced fewer sessions ({stats.merged_total}) than the remote dataset "
+            f"({stats.remote_total}); aborting to prevent data loss."
+        )
+    return stats.merged_total
 
 
 def _build_dataset_card(repo_id: str, meta: dict) -> str:
