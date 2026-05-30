@@ -388,6 +388,44 @@ def test_carry_forward_redactor_applies_model_filter(monkeypatch):
     assert seen == [True]
 
 
+def test_redaction_policy_version_changes_with_policy():
+    base = _exp._PrivacyFilterConfig(enabled=False)
+    v0 = _exp.redaction_policy_version([], [], base)
+    # Same inputs -> same version (deterministic).
+    assert v0 == _exp.redaction_policy_version([], [], base)
+    # Adding a redact string changes the version (policy tightened).
+    assert _exp.redaction_policy_version(["AcmeCorp"], [], base) != v0
+    # Enabling the model filter changes the version.
+    assert _exp.redaction_policy_version([], [], _exp._PrivacyFilterConfig(enabled=True)) != v0
+
+
+def test_carry_forward_skips_when_stamp_current(monkeypatch):
+    # A record already stamped with the CURRENT policy version must be returned
+    # verbatim without re-running redaction (the keystone scale optimization).
+    monkeypatch.setattr(_exp, "_read_privacy_filter_config", lambda: _exp._PrivacyFilterConfig(enabled=False))
+
+    redaction = {"redact_strings": [], "redact_usernames": []}
+    version = _exp.redaction_policy_version([], [], _exp._PrivacyFilterConfig(enabled=False))
+
+    transform_calls = []
+    monkeypatch.setattr(
+        _exp, "transform_session",
+        lambda *a, **k: transform_calls.append(1) or (a[0], 0),
+    )
+
+    redact_fn = _exp._build_carry_forward_redactor(redaction)
+
+    current = {"source": "claude", "session_id": "r1", "redaction_policy": version, "messages": []}
+    out = redact_fn(current)
+    assert out is current  # untouched
+    assert transform_calls == []  # transform_session NOT called
+
+    stale = {"source": "claude", "session_id": "r2", "redaction_policy": "OLD", "messages": []}
+    redact_fn(stale)
+    assert transform_calls == [1]  # stale record IS re-redacted
+    assert stale["redaction_policy"] == version  # and re-stamped
+
+
 def _match_pipe(entity: str, needle: str):
     def pipe(text):
         start = text.find(needle)

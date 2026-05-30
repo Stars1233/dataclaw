@@ -199,6 +199,33 @@ def _read_privacy_filter_config() -> _PrivacyFilterConfig:
     return _PrivacyFilterConfig(enabled=enabled, device=device, min_score=min_score, model=model)
 
 
+# Bump when the redaction CODE changes in a way that should force re-scanning
+# already-published records (independent of user config).
+_REDACTION_CODE_VERSION = "1"
+_REDACTION_POLICY_KEY = "redaction_policy"
+
+
+def redaction_policy_version(custom_strings, extra_usernames, pf_config: _PrivacyFilterConfig) -> str:
+    """Stable fingerprint of the CURRENT redaction policy.
+
+    Records are stamped with this on export. The merge re-redacts a
+    carried-forward record only when its stamp differs from the current version,
+    so a steady-state push is ~O(new data) instead of re-running redaction (and
+    the PII model) over the entire history every push. Tightening the policy
+    (new redact strings/usernames, model change, code bump) changes the version,
+    which forces a one-time full re-scan -- preserving the tighten-only guarantee.
+    """
+    parts = [
+        _REDACTION_CODE_VERSION,
+        "\x1f".join(sorted(custom_strings or [])),
+        "\x1f".join(sorted(extra_usernames or [])),
+        "1" if pf_config.enabled else "0",
+        (pf_config.model or "") if pf_config.enabled else "",
+        format(pf_config.min_score, ".4f") if pf_config.enabled else "",
+    ]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 _PF_WARNED = False
 
 
@@ -290,6 +317,9 @@ def _export_session_task_worker(payload) -> _WorkerSessionResult:
     # Optional model privacy filter runs AFTER mechanical redaction, before hashing.
     session = _apply_model_privacy_filter(session, pf_config)
     fingerprint = _gemini_dedupe_fingerprint(session, task.source)
+    # Stamp the current redaction policy so future merges can skip re-redacting
+    # this record while it stays current. After fingerprinting so dedup is stable.
+    session[_REDACTION_POLICY_KEY] = redaction_policy_version(custom_strings, extra_usernames, pf_config)
     stats = session.get("stats", {})
     input_tokens, output_tokens = _token_totals(stats)
     has_token_stats = isinstance(stats, dict) and ("input_tokens" in stats or "output_tokens" in stats)
@@ -354,6 +384,7 @@ def _export_to_jsonl_serial(
     total_input_tokens = 0
     total_output_tokens = 0
     seen_fingerprints: set[str] = set()
+    policy_version = redaction_policy_version(custom_strings, _export_extra_usernames(anonymizer), pf_config)
 
     for project in selected_projects:
         print(f"  Parsing {project['display_name']}...", end="", flush=True)
@@ -392,6 +423,7 @@ def _export_to_jsonl_serial(
             if fingerprint is not None:
                 seen_fingerprints.add(fingerprint)
 
+            session[_REDACTION_POLICY_KEY] = policy_version
             fh.write(json.dumps_bytes(session))
             fh.write(b"\n")
             total += 1
@@ -764,8 +796,16 @@ def _build_carry_forward_redactor(redaction: dict | None):
     # including the model privacy filter when it is enabled — otherwise the bulk of
     # a steady-state push (carry-forwards) would ship with mechanical redaction only.
     pf_config = _read_privacy_filter_config()
+    policy_version = redaction_policy_version(custom_strings, extra_usernames, pf_config)
 
     def redact_fn(record: dict) -> dict:
+        # Keystone optimization: a record already redacted under the CURRENT policy
+        # needs no re-work. Skip it (return verbatim) so a steady-state push doesn't
+        # re-run mechanical + model redaction over the entire history every time.
+        # The version changes whenever the policy tightens, forcing a one-time
+        # re-scan -- so the tighten-only guarantee is preserved.
+        if record.get(_REDACTION_POLICY_KEY) == policy_version:
+            return record
         # A fresh Anonymizer per record matches the per-worker construction and keeps
         # pseudonyms deterministic (hash-based), so re-redaction stays idempotent.
         anonymizer = Anonymizer(extra_usernames=extra_usernames)
@@ -779,6 +819,7 @@ def _build_carry_forward_redactor(redaction: dict | None):
         # Mirror the export loop: model PII pass after mechanical redaction. No-op
         # (and idempotent) when the filter is disabled or unavailable.
         redacted = _apply_model_privacy_filter(redacted, pf_config)
+        redacted[_REDACTION_POLICY_KEY] = policy_version
         return redacted
 
     return redact_fn
@@ -855,6 +896,16 @@ def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict, redaction: d
             meta["sessions"] = merged_total
             upload_target = merged_path if remote_path is not None else jsonl_path
 
+            # No-op detection: if the merged result is byte-identical to the remote
+            # we just downloaded, there is nothing new to publish. Skip ALL uploads
+            # (data + metadata + README) so a no-change push doesn't churn the repo
+            # with empty commits (the metadata timestamp alone would otherwise differ
+            # every run). Only reachable when remote exists (passthrough has no remote).
+            if remote_path is not None and _files_identical(merged_path, remote_path):
+                print("Dataset already up to date; nothing to publish.")
+                print(f"\nDataset: {hf_dataset_url(repo_id)}")
+                return
+
             try:
                 api.upload_file(
                     path_or_fileobj=str(upload_target),
@@ -895,6 +946,21 @@ def push_to_huggingface(jsonl_path: Path, repo_id: str, meta: dict, redaction: d
 
     print(f"\nDataset: {hf_dataset_url(repo_id)}")
     print(f"Browse all: {hf_browse_tagged_url()}")
+
+
+def _files_identical(a: Path, b: Path) -> bool:
+    """True if two files have identical bytes (chunked sha256, large-file safe)."""
+    if a.stat().st_size != b.stat().st_size:
+        return False
+
+    def _digest(path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    return _digest(a) == _digest(b)
 
 
 def _merge_or_passthrough(remote_path: Path | None, local_path: Path, merged_path: Path, redact_fn) -> int:

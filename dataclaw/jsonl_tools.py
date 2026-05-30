@@ -146,13 +146,17 @@ class MergeStats:
     updated: int = 0  # records present in both where the local copy won (superset)
     carried_forward: int = 0  # remote-only records preserved (re-redacted)
     unchanged: int = 0  # records present in both where the remote copy won (re-redacted)
+    malformed_preserved: int = 0  # unparseable lines carried through verbatim
 
     def changelog_line(self) -> str:
-        return (
+        line = (
             f"Merge: added {self.added}, updated {self.updated}, "
             f"carried_forward {self.carried_forward}, unchanged {self.unchanged} "
             f"(remote {self.remote_total} -> merged {self.merged_total})"
         )
+        if self.malformed_preserved:
+            line += f"; preserved {self.malformed_preserved} unparseable line(s) verbatim"
+        return line
 
 
 def merge_identity_key(obj: dict[str, Any]) -> tuple[Any, ...]:
@@ -199,18 +203,31 @@ def _record_prefers(candidate: dict[str, Any], current: dict[str, Any]) -> bool:
     return _end_time(candidate) > _end_time(current)
 
 
-def _load_raw_records(path: Path) -> list[dict[str, Any]]:
-    """Load JSONL records RAW (no diff normalization, preserves ``originalFile``)."""
+def _load_raw_records(path: Path) -> tuple[list[dict[str, Any]], list[bytes]]:
+    """Load JSONL records RAW (no diff normalization, preserves ``originalFile``).
+
+    Returns ``(records, malformed_lines)``. A line that is not valid JSON (or not a
+    JSON object) is returned verbatim in ``malformed_lines`` rather than raising or
+    being dropped: the merge preserves it so a single corrupt remote line can never
+    silently lose data nor permanently wedge all future pushes.
+    """
     records: list[dict[str, Any]] = []
+    malformed: list[bytes] = []
     with path.open("rb") as handle:
         for line in handle:
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            if not stripped:
                 continue
-            obj = orjson.loads(line)
+            try:
+                obj = orjson.loads(stripped)
+            except ValueError:  # orjson.JSONDecodeError subclasses ValueError
+                malformed.append(stripped)
+                continue
             if isinstance(obj, dict):
                 records.append(obj)
-    return records
+            else:
+                malformed.append(stripped)
+    return records, malformed
 
 
 def merge_jsonl_union(
@@ -236,8 +253,11 @@ def merge_jsonl_union(
     ``redact_fn`` is injected so this module stays free of import cycles with the
     redaction pipeline.
     """
-    remote_records = _load_raw_records(remote_path)
-    local_records = _load_raw_records(local_path)
+    remote_records, remote_malformed = _load_raw_records(remote_path)
+    local_records, local_malformed = _load_raw_records(local_path)
+    # Preserve unparseable lines verbatim (deduped by exact bytes) so a corrupt
+    # remote line is never dropped (data loss) nor allowed to abort the push (wedge).
+    malformed = list(dict.fromkeys(remote_malformed + local_malformed))
 
     # Totals are counted by UNIQUE merge key, not raw line count. A remote file
     # written by the old non-deduping uploader can contain duplicate
@@ -301,9 +321,19 @@ def merge_jsonl_union(
             handle.write(b"\n")
             merged_total += 1
 
-    stats.remote_total = len(in_remote)
-    stats.local_total = len(in_local)
+        for raw in malformed:
+            handle.write(raw)
+            handle.write(b"\n")
+            merged_total += 1
+
+    # Malformed remote lines count toward remote_total (by UNIQUE bytes, matching
+    # the unique-key counting above) so the union invariant merged_total >=
+    # remote_total accounts for the records they represent without false-tripping
+    # on duplicate corrupt lines.
+    stats.remote_total = len(in_remote) + len(set(remote_malformed))
+    stats.local_total = len(in_local) + len(set(local_malformed))
     stats.merged_total = merged_total
+    stats.malformed_preserved = len(malformed)
     return stats
 
 

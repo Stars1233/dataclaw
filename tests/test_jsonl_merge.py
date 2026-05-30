@@ -231,6 +231,26 @@ class TestMergeJsonlUnion:
         assert stats.merged_total == 1
         assert stats.merged_total >= stats.remote_total  # invariant holds, no false abort
 
+    def test_malformed_remote_line_preserved_not_dropped(self, tmp_path):
+        # A corrupt remote line must be carried through verbatim (never dropped =
+        # data loss, never raised = wedged pushes).
+        remote = tmp_path / "remote.jsonl"
+        local = tmp_path / "local.jsonl"
+        out = tmp_path / "merged.jsonl"
+        remote.write_bytes(
+            orjson.dumps({"source": "claude", "session_id": "r1", "messages": [{"role": "user"}]})
+            + b"\n"
+            + b"{this is not valid json,,,}\n"
+        )
+        _write_jsonl(local, [])
+
+        stats = merge_jsonl_union(remote, local, out, redact_fn=_identity)
+
+        raw = out.read_bytes()
+        assert b"{this is not valid json,,,}" in raw  # preserved verbatim
+        assert stats.malformed_preserved == 1
+        assert stats.merged_total >= stats.remote_total  # invariant still holds
+
     def test_changelog_line_format(self):
         stats = MergeStats(
             remote_total=3, local_total=2, merged_total=4, added=1, updated=1, carried_forward=2, unchanged=0
