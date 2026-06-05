@@ -21,7 +21,7 @@ Every export is tagged **`dataclaw`** on Hugging Face. Together, they may someda
 
 DataClaw ships as a Mac menu-bar app for Apple Silicon MacBooks and desktop Macs. Download the DMG, drag `DataClaw.app` to Applications, then launch it from Applications or Spotlight.
 
-The current GitHub DMG is unsigned while Apple Developer ID signing is being set up, so macOS may show a Gatekeeper warning on first launch. The app bundles the DataClaw sidecar, so Mac users do not need to install Python, PyInstaller, or the CLI separately.
+The current GitHub DMG is unsigned while Apple Developer ID signing is being set up, so macOS blocks the first launch — see [Opening the app for the first time](#opening-the-app-for-the-first-time). The app bundles the DataClaw sidecar, so Mac users do not need to install Python, PyInstaller, or the CLI separately.
 
 ## Install Options
 
@@ -30,6 +30,17 @@ The current GitHub DMG is unsigned while Apple Developer ID signing is being set
 1. [Download DataClaw for Mac](https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg).
 2. Open the DMG and drag `DataClaw.app` to Applications.
 3. Launch DataClaw from Applications or Spotlight.
+
+### Opening the app for the first time
+
+The build is currently unsigned, so macOS blocks the first launch; this is expected, one-time, and takes about 20 seconds.
+
+![Four-step macOS Gatekeeper walkthrough for opening unsigned DataClaw.app](docs/images/macos-open-anyway.png)
+
+1. Double-click **DataClaw.app** → a dialog says it can't be opened → click **Done** (not **Move to Trash**).
+2. Open **System Settings** and type **Privacy & Security** in the search field (or: Apple menu → System Settings).
+3. Scroll to the **Security** section — you'll see *"DataClaw" was blocked to protect your Mac* → click **Open Anyway**.
+4. In the confirmation dialog click **Open Anyway** again and authenticate with Touch ID or your password. DataClaw launches and lives in the menu bar; subsequent launches are normal.
 
 All release assets are also available on [GitHub Releases](https://github.com/peteromallet/dataclaw/releases/latest). Intel Mac users can use the CLI install for now.
 
