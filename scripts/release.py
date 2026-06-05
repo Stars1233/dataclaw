@@ -51,7 +51,12 @@ def parse_semver(version: str) -> tuple[int, int, int]:
 
 
 def default_branch() -> str:
-    ref = run_git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    try:
+        ref = run_git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    except ReleaseError:
+        # origin/HEAD is unset in many clones; resolve it from the remote.
+        run_git("remote", "set-head", "origin", "--auto")
+        ref = run_git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if not ref.startswith("origin/"):
         raise ReleaseError(f"Could not determine default branch from origin/HEAD: {ref!r}")
     return ref.removeprefix("origin/")
