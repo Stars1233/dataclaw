@@ -8,7 +8,9 @@ Turn your Claude Code, Codex, and other coding-agent conversation history into s
 
 Every export is tagged **`dataclaw`** on Hugging Face. Together, they may someday form a growing [distributed dataset](https://huggingface.co/datasets?other=dataclaw) of real-world human-AI coding collaboration.
 
-## Download for Mac
+## Install
+
+### Mac app
 
 <p align="center">
   <a href="https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg">
@@ -19,21 +21,11 @@ Every export is tagged **`dataclaw`** on Hugging Face. Together, they may someda
   </a>
 </p>
 
-DataClaw ships as a Mac menu-bar app for Apple Silicon MacBooks and desktop Macs. Download the DMG, drag `DataClaw.app` to Applications, then launch it from Applications or Spotlight.
+A menu-bar app for Apple Silicon Macs. Download the DMG, drag `DataClaw.app` to Applications, and launch it from Applications or Spotlight. The app bundles everything it needs — no Python or CLI install required.
 
-The current GitHub DMG is unsigned while Apple Developer ID signing is being set up, so macOS blocks the first launch — see [Opening the app for the first time](#opening-the-app-for-the-first-time). The app bundles the DataClaw sidecar, so Mac users do not need to install Python, PyInstaller, or the CLI separately.
+#### Opening the app for the first time
 
-## Install Options
-
-### Mac app
-
-1. [Download DataClaw for Mac](https://github.com/peteromallet/dataclaw/releases/latest/download/DataClaw-macOS-Apple-Silicon.dmg).
-2. Open the DMG and drag `DataClaw.app` to Applications.
-3. Launch DataClaw from Applications or Spotlight.
-
-### Opening the app for the first time
-
-The build is currently unsigned, so macOS blocks the first launch; this is expected, one-time, and takes about 20 seconds.
+The build is currently unsigned (Apple Developer ID signing is being set up), so macOS blocks the first launch. This is expected, one-time, and takes about 20 seconds:
 
 ![Four-step macOS Gatekeeper walkthrough for opening unsigned DataClaw.app](docs/images/macos-open-anyway.png)
 
@@ -42,13 +34,9 @@ The build is currently unsigned, so macOS blocks the first launch; this is expec
 3. Scroll to the **Security** section — you'll see *"DataClaw" was blocked to protect your Mac* → click **Open Anyway**.
 4. In the confirmation dialog click **Open Anyway** again and authenticate with Touch ID or your password. DataClaw launches and lives in the menu bar; subsequent launches are normal.
 
-All release assets are also available on [GitHub Releases](https://github.com/peteromallet/dataclaw/releases/latest). Intel Mac users can use the CLI install for now.
+### CLI
 
-Once Apple signing secrets are configured, releases can be signed, notarized, and configured for in-app updates through GitHub Releases.
-
-### CLI only
-
-Use this if you want the terminal workflow or you are asking a coding agent to run DataClaw for you:
+For the terminal workflow, Intel Macs, or driving DataClaw with a coding agent:
 
 ```bash
 pip install -U dataclaw
@@ -114,80 +102,6 @@ IMPORTANT: Never run bare `hf auth login` when automating this with an agent - a
 IMPORTANT: Always export with --no-push first and review for PII before publishing.
 ```
 
-## Manual usage (without an agent)
-
-```bash
-# STEP 1 - INSTALL
-pip install -U dataclaw
-hf auth login --token YOUR_TOKEN
-
-# STEP 3 - PREP
-dataclaw prep
-dataclaw config --repo username/my-personal-codex-data
-
-# STEP 3A - CHOOSE SOURCE SCOPE
-dataclaw config --source all  # REQUIRED: choose a supported source key or all
-
-# STEP 3B - CHOOSE PROJECT SCOPE
-dataclaw list --source all  # Present full list and confirm folder scope before export
-dataclaw config --exclude "personal-stuff,scratch"  # or: dataclaw config --confirm-projects
-
-# STEP 3C - SET REDACTED STRINGS
-dataclaw config --redact-usernames "my_github_handle,my_discord_name"
-dataclaw config --redact "my-domain.com,my-secret-project"
-
-# STEP 4 - EXPORT LOCALLY
-dataclaw export --no-push
-
-# STEP 5 - REVIEW AND CONFIRM
-dataclaw confirm \
-  --full-name "YOUR FULL NAME" \
-  --attest-full-name "Asked for full name and scanned export for YOUR FULL NAME." \
-  --attest-sensitive "Asked about company/client/internal names and private URLs; none found or redactions updated." \
-  --attest-manual-scan "Manually scanned 20 sessions across beginning/middle/end and reviewed findings."
-
-# Or: if user declines sharing full name
-dataclaw confirm \
-  --skip-full-name-scan \
-  --attest-full-name "User declined to share full name; skipped exact-name scan." \
-  --attest-sensitive "Asked about company/client/internal names and private URLs; none found or redactions updated." \
-  --attest-manual-scan "Manually scanned 20 sessions across beginning/middle/end and reviewed findings."
-
-# STEP 6 - PUBLISH
-dataclaw export --publish-attestation "User explicitly approved publishing to Hugging Face."
-```
-
-Step 2 (INSTALL SKILL) is omitted in manual usage.
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `dataclaw status` | Show current stage and next steps |
-| `dataclaw prep` | Discover projects, check HF auth, output JSON |
-| `dataclaw prep --source <source\|all>` | Prep with an explicit source scope |
-| `dataclaw list` | List all projects with exclusion status |
-| `dataclaw list --source <source\|all>` | List projects for a specific source scope |
-| `dataclaw config` | Show current config |
-| `dataclaw config --repo user/my-personal-codex-data` | Set HF repo |
-| `dataclaw config --source <source\|all>` | REQUIRED source scope selection (examples include `claude`, `codex`, and others) |
-| `dataclaw config --exclude "a,b"` | Add excluded projects (appends) |
-| `dataclaw config --redact "str1,str2"` | Add strings to always redact (appends) |
-| `dataclaw config --redact-usernames "u1,u2"` | Add usernames to anonymize (appends) |
-| `dataclaw config --confirm-projects` | Mark project selection as confirmed |
-| `dataclaw export --no-push` | Export locally only (always do this first) |
-| `dataclaw export --source <source\|all> --no-push` | Export a chosen source scope locally |
-| `dataclaw confirm --full-name "NAME" --attest-full-name "..." --attest-sensitive "..." --attest-manual-scan "..."` | Scan for PII, run exact-name privacy check, verify review attestations, unlock pushing |
-| `dataclaw confirm --skip-full-name-scan --attest-full-name "..." --attest-sensitive "..." --attest-manual-scan "..."` | Skip exact-name scan when user declines sharing full name (requires skip attestation) |
-| `dataclaw export --publish-attestation "..."` | Export and push (requires `dataclaw confirm` first) |
-| `dataclaw export --all-projects` | Include everything (ignore exclusions) |
-| `dataclaw export --no-thinking` | Exclude extended thinking blocks |
-| `dataclaw jsonl-to-yaml [input.jsonl]` | Convert an export JSONL file to human-readable YAML |
-| `dataclaw diff-jsonl --old old.jsonl --new new.jsonl` | Structurally diff two export JSONL files and write YAML |
-| `dataclaw update-skill claude` | Install/update the dataclaw skill for Claude Code |
-
-Set `DATACLAW_WORKERS` to control the worker count used by parallel operations such as `export`, `confirm`, and `diff-jsonl`.
-
 ## What gets exported
 
 - User messages - Including voice transcripts and images
@@ -217,58 +131,6 @@ then use tools such as [trufflehog](https://github.com/trufflesecurity/truffleho
 You can also compare the exported jsonl with a previous baseline using `dataclaw diff-jsonl`.
 
 To help improve redaction, report issues: https://github.com/peteromallet/dataclaw/issues
-
-### Data schema
-
-Each line in `conversations.jsonl` is one session:
-
-```json
-{
-  "session_id": "abc-123",
-  "project": "my-project",
-  "model": "claude-opus-4-6",
-  "git_branch": "main",
-  "start_time": "2025-06-15T10:00:00+00:00",
-  "end_time": "2025-06-15T10:30:00+00:00",
-  "messages": [
-    {
-      "role": "user",
-      "content": "Fix the login bug",
-      "content_parts": [
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
-      ],
-      "timestamp": "..."
-    },
-    {
-      "role": "assistant",
-      "content": "I'll investigate the login flow.",
-      "thinking": "The user wants me to look at...",
-      "tool_uses": [
-          {
-            "tool": "bash",
-            "input": {"command": "grep -r 'login' src/"},
-            "output": {
-              "text": "src/auth.py:42: def login(user, password):",
-              "raw": {"stderr": "", "interrupted": false}
-            },
-            "status": "success"
-          }
-        ],
-      "timestamp": "..."
-    }
-  ],
-  "stats": {
-    "user_messages": 5, "assistant_messages": 8,
-    "tool_uses": 20, "input_tokens": 50000, "output_tokens": 3000
-  }
-}
-```
-
-`messages[].content_parts` is optional and preserves structured user content such as attachments when the source provides them. The canonical human-readable user text remains in `messages[].content`.
-
-`tool_uses[].output.raw` is optional and preserves extra structured tool-result fields when the source provides them. The canonical human-readable result text remains in `tool_uses[].output.text`.
-
-Each HF repo also includes a `metadata.json` with aggregate stats.
 
 ## Finding datasets on Hugging Face
 
@@ -300,7 +162,7 @@ The auto-generated HF README includes:
 **Better scheme:** If you need to clean the data and want to propose a better scheme, feel free to open an issue.
 
 **New provider:** If you use a new coding agent, you can ask it to read this repo and export its data as a new provider. Take Claude Code and Codex parsers as examples because they are the most well maintained. When you finish, ask the following questions:
-- Did you follow the scheme above? Currently it's free to add custom fields in `messages[].content_parts` and `tool_uses[].output.raw`.
+- Did you follow the schema the existing parsers emit? It's fine to add custom fields in `messages[].content_parts` and `tool_uses[].output.raw`.
 - Did you export all data, especially:
   - tool call inputs and outputs
   - long inputs and outputs that may be saved somewhere else
